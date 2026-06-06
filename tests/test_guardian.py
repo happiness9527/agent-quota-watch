@@ -139,6 +139,15 @@ class GuardianCliTests(unittest.TestCase):
         delete_args = guardian.build_parser().parse_args(["delete", "task-1"])
         self.assertEqual(delete_args.command, "delete")
 
+    def test_dashboard_command_parses(self):
+        args = guardian.build_parser().parse_args(
+            ["dashboard", "--scan-ui", "--open", "--interval", "15"]
+        )
+        self.assertEqual(args.command, "dashboard")
+        self.assertTrue(args.scan_ui)
+        self.assertTrue(args.open)
+        self.assertEqual(args.interval, 15)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,18 +8,23 @@ It does not read platform auth files or private quota databases.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
+import webbrowser
 
 
 APP_NAME = "Agent Guardian"
@@ -1068,37 +1073,426 @@ def due_for_resume(task: dict[str, Any]) -> bool:
     return parse_datetime(retry_at) <= local_now()
 
 
-def daemon_tick(args: argparse.Namespace) -> None:
+def pending_tasks(tasks: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    tasks = tasks if tasks is not None else load_tasks()
+    return [task for task in tasks if task.get("status") in {"rate_limited", "scheduled"}]
+
+
+def next_retry_task(tasks: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    candidates = []
+    for task in pending_tasks(tasks):
+        retry_at = task.get("retry_at")
+        if not retry_at:
+            candidates.append((local_now(), task))
+            continue
+        try:
+            candidates.append((parse_datetime(retry_at), task))
+        except ValueError:
+            continue
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: item[0])[0][1]
+
+
+def daemon_tick(args: argparse.Namespace, *, quiet: bool = False) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "scanned_at": iso(local_now()),
+        "discovered": [],
+        "warnings": [],
+        "resumed": [],
+    }
     if args.discover:
         discovered, warnings = run_discovery(args)
+        summary["discovered"] = discovered
+        summary["warnings"] = warnings
         for warning in warnings:
-            print(f"发现扫描警告: {warning}")
+            if not quiet:
+                print(f"发现扫描警告: {warning}")
         for task in discovered:
-            print(f"自动发现额度中断任务: {task['id']} retry_at={task.get('retry_at')}")
+            if not quiet:
+                print(f"自动发现额度中断任务: {task['id']} retry_at={task.get('retry_at')}")
 
     for task in load_tasks():
         if not due_for_resume(task):
             continue
-        print(f"开始恢复任务: {task['id']}")
+        if not quiet:
+            print(f"开始恢复任务: {task['id']}")
         result = execute_task(
             task,
             resume=True,
             warn_after=parse_duration(args.warn_after),
             no_popup=args.no_popup,
         )
+        summary["resumed"].append(
+            {"id": task["id"], "status": result.status, "retry_at": result.retry_at}
+        )
         if result.status == "rate_limited":
-            print(f"任务仍受额度限制，已重新排队: {task['id']} -> {result.retry_at}")
+            if not quiet:
+                print(f"任务仍受额度限制，已重新排队: {task['id']} -> {result.retry_at}")
         else:
-            print(f"任务恢复结束: {task['id']} status={result.status}")
+            if not quiet:
+                print(f"任务恢复结束: {task['id']} status={result.status}")
+    return summary
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
-    print(f"{APP_NAME} daemon started. state={TASKS_FILE}")
+    print(f"{APP_NAME} 守护进程已启动")
+    print(f"状态文件: {TASKS_FILE}")
+    print(f"扫描范围: Claude Code / Codex{' / Claude 桌面 App' if args.scan_ui else ''}")
+    print("说明: 没有新输出不代表失败；每次扫描完成后会打印中文状态。")
     while True:
-        daemon_tick(args)
+        summary = daemon_tick(args)
+        tasks = load_tasks()
+        pending = pending_tasks(tasks)
+        next_task = next_retry_task(tasks)
+        print(
+            f"[{summary['scanned_at']}] 扫描完成: "
+            f"新发现 {len(summary['discovered'])} 个，"
+            f"已恢复 {len(summary['resumed'])} 个，"
+            f"等待恢复 {len(pending)} 个。"
+        )
+        if next_task:
+            print(f"下一次预计恢复: {next_task.get('retry_at')}  task={next_task.get('id')}")
         if args.once:
             return 0
+        print(f"下次扫描将在 {args.interval} 秒后执行。按 Ctrl+C 停止。")
         time.sleep(args.interval)
+
+
+STATUS_LABELS = {
+    "created": "已创建",
+    "scheduled": "已排队",
+    "running": "运行中",
+    "resuming": "恢复中",
+    "rate_limited": "额度中断",
+    "completed": "已完成",
+    "failed": "失败",
+}
+
+PLATFORM_LABELS = {
+    "claude": "Claude Code",
+    "claude-app": "Claude 桌面 App",
+    "codex": "Codex",
+}
+
+
+def h(value: Any) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def short_text(value: Any, *, limit: int = 160) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def dashboard_daemon_args(args: argparse.Namespace) -> argparse.Namespace:
+    return argparse.Namespace(
+        discover=True,
+        platform=args.platform,
+        days=args.days,
+        cwd=args.cwd,
+        auto_resume="yes",
+        codex_reached_threshold=args.codex_reached_threshold,
+        scan_ui=args.scan_ui,
+        dry_run=False,
+        warn_after="4h30m",
+        no_popup=True,
+    )
+
+
+def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]) -> str:
+    tasks = load_tasks()
+    pending = pending_tasks(tasks)
+    next_task = next_retry_task(tasks)
+    warnings = worker_state.get("warnings") or []
+    last_scan = worker_state.get("last_scan") or "尚未扫描"
+    worker_enabled = not args.no_worker
+    claude_ui_note = (
+        "已开启 Claude 桌面 App 窗口扫描。若提示权限错误，请在 macOS 设置里给 Terminal 或 Python 开启辅助功能权限。"
+        if args.scan_ui
+        else "默认只扫描 Claude Code/Codex 本地会话。要扫描 Claude 桌面 App，请用 dashboard --scan-ui 启动。"
+    )
+
+    rows = []
+    for task in sorted(tasks, key=lambda item: item.get("updated_at") or "", reverse=True):
+        status = STATUS_LABELS.get(task.get("status"), task.get("status") or "-")
+        platform = PLATFORM_LABELS.get(task.get("platform"), task.get("platform") or "-")
+        retry_at = task.get("retry_at") or "-"
+        prompt = short_text(task.get("prompt") or task.get("name") or task.get("id"))
+        row = f"""
+        <tr>
+          <td><span class="pill status-{h(task.get('status'))}">{h(status)}</span></td>
+          <td>{h(platform)}</td>
+          <td>
+            <div class="task-id">{h(task.get('id'))}</div>
+            <div class="muted">{h(prompt)}</div>
+          </td>
+          <td>{h(retry_at)}</td>
+          <td>{h(task.get('cwd'))}</td>
+          <td class="actions">
+            <form method="post" action="/action/resume"><input type="hidden" name="id" value="{h(task.get('id'))}"><button>立即恢复</button></form>
+            <form method="post" action="/action/delete"><input type="hidden" name="id" value="{h(task.get('id'))}"><button class="danger">删除</button></form>
+          </td>
+        </tr>
+        """
+        rows.append(row)
+
+    warnings_html = "".join(f"<li>{h(warning)}</li>" for warning in warnings)
+    if not warnings_html:
+        warnings_html = "<li>暂无警告。</li>"
+
+    task_rows = "\n".join(rows) or """
+      <tr><td colspan="6" class="empty">暂无托管任务。保持页面打开，Guardian 会继续扫描。</td></tr>
+    """
+
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="20">
+  <title>Agent Continuity Guardian</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --border: #d9dee7;
+      --accent: #1769aa;
+      --danger: #b42318;
+      --ok: #067647;
+      --warn: #b54708;
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #101418;
+        --panel: #171d23;
+        --text: #edf2f7;
+        --muted: #aab4c0;
+        --border: #2d3742;
+        --accent: #7cc4ff;
+      }}
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }}
+    header {{
+      padding: 28px 32px 18px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }}
+    h1 {{ margin: 0 0 8px; font-size: 26px; letter-spacing: 0; }}
+    p {{ margin: 0; color: var(--muted); line-height: 1.55; }}
+    main {{ padding: 24px 32px 40px; max-width: 1400px; margin: 0 auto; }}
+    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }}
+    .card {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }}
+    .label {{ color: var(--muted); font-size: 13px; margin-bottom: 6px; }}
+    .value {{ font-size: 22px; font-weight: 700; }}
+    .toolbar {{ display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0; }}
+    button, .button {{
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      padding: 9px 12px;
+      border-radius: 7px;
+      cursor: pointer;
+      font-size: 14px;
+    }}
+    button.primary, .button.primary {{ background: var(--accent); border-color: var(--accent); color: white; }}
+    button.danger {{ color: var(--danger); }}
+    table {{ width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }}
+    th, td {{ padding: 12px; border-bottom: 1px solid var(--border); vertical-align: top; text-align: left; font-size: 14px; }}
+    th {{ color: var(--muted); font-weight: 600; white-space: nowrap; }}
+    .task-id {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; margin-bottom: 4px; }}
+    .muted {{ color: var(--muted); }}
+    .pill {{ display: inline-block; padding: 4px 8px; border-radius: 999px; background: #eef2f6; color: #344054; white-space: nowrap; }}
+    .status-completed {{ color: var(--ok); }}
+    .status-rate_limited, .status-scheduled {{ color: var(--warn); }}
+    .status-failed {{ color: var(--danger); }}
+    .actions {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+    .actions form {{ margin: 0; }}
+    .empty {{ text-align: center; color: var(--muted); padding: 28px; }}
+    .notice {{ margin: 18px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
+    ul {{ margin: 8px 0 0 18px; padding: 0; color: var(--muted); }}
+    code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    @media (max-width: 900px) {{
+      header, main {{ padding-left: 16px; padding-right: 16px; }}
+      .grid, .notice {{ grid-template-columns: 1fr; }}
+      table {{ display: block; overflow-x: auto; }}
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Agent Continuity Guardian</h1>
+    <p>本地守护页面：自动扫描 Codex 与 Claude 的额度中断任务，到恢复时间后自动继续。</p>
+  </header>
+  <main>
+    <section class="grid">
+      <div class="card"><div class="label">守护状态</div><div class="value">{'运行中' if worker_enabled else '手动模式'}</div></div>
+      <div class="card"><div class="label">托管任务</div><div class="value">{len(tasks)}</div></div>
+      <div class="card"><div class="label">等待恢复</div><div class="value">{len(pending)}</div></div>
+      <div class="card"><div class="label">下一次恢复</div><div class="value">{h(next_task.get('retry_at') if next_task else '-')}</div></div>
+    </section>
+
+    <section class="toolbar">
+      <form method="post" action="/action/discover"><button class="primary">立即扫描 Codex / Claude Code</button></form>
+      <form method="post" action="/action/discover-ui"><button>扫描 Claude 桌面 App</button></form>
+      <form method="post" action="/action/tick"><button>恢复到期任务</button></form>
+      <a class="button" href="/">刷新页面</a>
+    </section>
+
+    <section class="notice">
+      <div class="card">
+        <div class="label">最近扫描</div>
+        <p>{h(last_scan)}</p>
+        <p class="muted">Dashboard 每 {args.interval} 秒后台扫描一次，页面每 20 秒自动刷新。</p>
+      </div>
+      <div class="card">
+        <div class="label">Claude 桌面 App 说明</div>
+        <p>{h(claude_ui_note)}</p>
+        <ul>{warnings_html}</ul>
+      </div>
+    </section>
+
+    <table>
+      <thead>
+        <tr><th>状态</th><th>平台</th><th>任务</th><th>恢复时间</th><th>目录</th><th>操作</th></tr>
+      </thead>
+      <tbody>{task_rows}</tbody>
+    </table>
+
+    <section class="card" style="margin-top:18px">
+      <div class="label">推荐启动方式</div>
+      <p><code>python3 guardian.py dashboard --open</code></p>
+      <p class="muted">如果要监控 Claude 桌面 App 窗口，使用 <code>python3 guardian.py dashboard --scan-ui --open</code>，并先给 Terminal/Python 开辅助功能权限。</p>
+    </section>
+  </main>
+</body>
+</html>"""
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    daemon_args = dashboard_daemon_args(args)
+    lock = threading.Lock()
+    stop_event = threading.Event()
+    worker_state: dict[str, Any] = {
+        "last_scan": "尚未扫描",
+        "warnings": [],
+    }
+
+    def run_tick(*, scan_ui_override: bool | None = None) -> dict[str, Any]:
+        local_args = argparse.Namespace(**vars(daemon_args))
+        if scan_ui_override is not None:
+            local_args.scan_ui = scan_ui_override
+        with lock:
+            summary = daemon_tick(local_args, quiet=True)
+            worker_state["last_scan"] = summary["scanned_at"]
+            worker_state["warnings"] = summary.get("warnings") or []
+            worker_state["last_summary"] = summary
+            return summary
+
+    def worker() -> None:
+        while not stop_event.is_set():
+            run_tick()
+            stop_event.wait(args.interval)
+
+    if not args.no_worker:
+        threading.Thread(target=worker, daemon=True).start()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *values: Any) -> None:
+            if args.verbose:
+                super().log_message(format, *values)
+
+        def send_html(self, body: str, *, status: int = 200) -> None:
+            encoded = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def redirect_home(self) -> None:
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path != "/":
+                self.send_html("<h1>Not Found</h1>", status=404)
+                return
+            self.send_html(render_dashboard_html(args, worker_state))
+
+        def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length).decode("utf-8", errors="ignore")
+            form = parse_qs(body)
+            task_id = (form.get("id") or [""])[0]
+
+            try:
+                if parsed.path == "/action/discover":
+                    run_tick(scan_ui_override=False)
+                elif parsed.path == "/action/discover-ui":
+                    run_tick(scan_ui_override=True)
+                elif parsed.path == "/action/tick":
+                    run_tick()
+                elif parsed.path == "/action/delete" and task_id:
+                    remove_task(task_id)
+                elif parsed.path == "/action/resume" and task_id:
+                    task = get_task(task_id)
+                    execute_task(
+                        task,
+                        resume=True,
+                        warn_after=parse_duration("4h30m"),
+                        no_popup=True,
+                    )
+                else:
+                    self.send_html("<h1>Bad Request</h1>", status=400)
+                    return
+            except Exception as exc:  # noqa: BLE001 - local dashboard should surface errors.
+                self.send_html(
+                    f"<h1>操作失败</h1><p>{h(exc)}</p><p><a href='/'>返回</a></p>",
+                    status=500,
+                )
+                return
+            self.redirect_home()
+
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    url = f"http://{args.host}:{args.port}"
+    print(f"Agent Guardian 可视化页面已启动: {url}", flush=True)
+    print("保持这个终端窗口打开，页面和后台扫描才会继续运行。按 Ctrl+C 停止。", flush=True)
+    if args.scan_ui:
+        print(
+            "已开启 Claude 桌面 App 扫描；如果页面显示权限警告，请到 macOS 设置开启辅助功能权限。",
+            flush=True,
+        )
+    if args.open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n已停止 Dashboard。")
+    finally:
+        stop_event.set()
+        server.server_close()
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1187,6 +1581,20 @@ def build_parser() -> argparse.ArgumentParser:
     daemon.add_argument("--no-discover", dest="discover", action="store_false")
     daemon.set_defaults(discover=True)
     daemon.set_defaults(func=cmd_daemon)
+
+    dashboard = sub.add_parser("dashboard", help="start a local Chinese web dashboard")
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument("--interval", type=int, default=30)
+    dashboard.add_argument("--platform", choices=["all", "claude", "codex"], default="all")
+    dashboard.add_argument("--days", type=int, default=2)
+    dashboard.add_argument("--cwd", default=os.getcwd())
+    dashboard.add_argument("--codex-reached-threshold", type=float, default=100.0)
+    dashboard.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
+    dashboard.add_argument("--no-worker", action="store_true", help="serve the page without background scanning")
+    dashboard.add_argument("--open", action="store_true", help="open the dashboard in the default browser")
+    dashboard.add_argument("--verbose", action="store_true")
+    dashboard.set_defaults(func=cmd_dashboard)
 
     return parser
 
