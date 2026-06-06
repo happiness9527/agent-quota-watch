@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hashlib
 import html
 import json
 import os
@@ -37,6 +38,7 @@ LOG_DIR = DEFAULT_HOME / "logs"
 DEFAULT_RETRY_DELAY = timedelta(hours=5, minutes=10)
 DEFAULT_WARN_AFTER = timedelta(hours=4, minutes=30)
 DEFAULT_RESET_BUFFER = timedelta(minutes=2)
+DEFAULT_CODEX_NEAR_LIMIT_PERCENT = 85.0
 
 QUOTA_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -658,13 +660,14 @@ def register_discovered_task(
     source: str,
     auto_resume: bool,
     dry_run: bool,
+    status: str = "rate_limited",
 ) -> dict[str, Any]:
     retry_at_text = iso(retry_at)
     existing = get_task_by_source_key(source_key)
     if existing:
         existing.update(
             {
-                "status": "rate_limited",
+                "status": status,
                 "retry_at": retry_at_text,
                 "auto_resume": auto_resume,
                 "source": source,
@@ -688,7 +691,7 @@ def register_discovered_task(
     )
     task["source_key"] = source_key
     task["source"] = source
-    task["status"] = "rate_limited"
+    task["status"] = status
     if not dry_run:
         upsert_task(task)
         ensure_checkpoint(task)
@@ -767,6 +770,8 @@ def discover_codex_sessions(
         prompt = "Auto-discovered Codex quota-limited task"
         latest_retry_at: datetime | None = None
         reached = False
+        reached_limit = False
+        max_used_percent = 0.0
 
         for raw in read_tail_text(path, max_bytes=512_000).splitlines():
             if (
@@ -796,6 +801,7 @@ def discover_codex_sessions(
 
             if rate_limits.get("rate_limit_reached_type"):
                 reached = True
+                reached_limit = True
 
             for bucket_name in ("primary", "secondary"):
                 bucket = rate_limits.get(bucket_name)
@@ -806,15 +812,25 @@ def discover_codex_sessions(
                     used_float = float(used)
                 except (TypeError, ValueError):
                     used_float = 0.0
+                max_used_percent = max(max_used_percent, used_float)
                 if used_float >= reached_threshold:
                     reached = True
+                if used_float >= 100.0:
+                    reached_limit = True
                 reset = datetime_from_epoch(bucket.get("resets_at"))
                 if reset and reset > local_now():
+                    reset = reset + DEFAULT_RESET_BUFFER
                     if latest_retry_at is None or reset < latest_retry_at:
                         latest_retry_at = reset
 
         if not reached:
             continue
+        status = "rate_limited" if reached_limit else "scheduled"
+        prompt = (
+            f"{prompt}\n\n"
+            f"[Guardian] Codex 使用量已接近阈值：最高 used_percent={max_used_percent:.1f}%，"
+            f"将在额度窗口重置后自动续跑。"
+        )
         discovered.append(
             register_discovered_task(
                 platform="codex",
@@ -826,6 +842,7 @@ def discover_codex_sessions(
                 source=str(path),
                 auto_resume=auto_resume,
                 dry_run=dry_run,
+                status=status,
             )
         )
     return discovered
@@ -859,6 +876,12 @@ def discover_claude_app_ui(
     text, error = read_claude_app_text()
     if error:
         return [], error
+    if not text.strip():
+        return [], (
+            "已连接 Claude 桌面 App，但没有读取到窗口文字。"
+            "请确认 Claude 窗口处于打开状态；若仍为空，说明当前版本的 Claude 桌面 App "
+            "没有把这段提示暴露给 macOS 辅助功能。可在下方手动粘贴 Usage limit 文案登记。"
+        )
     if not is_quota_text(text):
         return [], None
 
@@ -875,6 +898,32 @@ def discover_claude_app_ui(
         dry_run=dry_run,
     )
     return [task], None
+
+
+def register_claude_app_limit_text(
+    text: str,
+    *,
+    cwd: str,
+    auto_resume: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    if not text.strip():
+        raise ValueError("请先粘贴 Claude 桌面 App 的额度提示文案。")
+    if not is_quota_text(text):
+        raise ValueError("没有识别到额度中断文案。请粘贴包含 Usage limit reached / Resets 2:30 AM 的完整提示。")
+    retry_at = infer_retry_at(text)
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
+    return register_discovered_task(
+        platform="claude-app",
+        cwd=cwd,
+        session="ui",
+        prompt=f"Claude 桌面 App 手动登记: {short_text(text, limit=240)}",
+        retry_at=retry_at,
+        source_key=f"claude-app:manual:{digest}",
+        source="manual Claude App usage-limit text",
+        auto_resume=auto_resume,
+        dry_run=dry_run,
+    )
 
 
 def run_discovery(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[str]]:
@@ -1162,7 +1211,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
 STATUS_LABELS = {
     "created": "已创建",
-    "scheduled": "已排队",
+    "scheduled": "等待重置",
     "running": "运行中",
     "resuming": "恢复中",
     "rate_limited": "额度中断",
@@ -1175,6 +1224,25 @@ PLATFORM_LABELS = {
     "claude-app": "Claude 桌面 App",
     "codex": "Codex",
 }
+
+
+def resume_time_reached(task: dict[str, Any]) -> bool:
+    retry_at = task.get("retry_at")
+    if not retry_at:
+        return True
+    try:
+        return parse_datetime(retry_at) <= local_now()
+    except ValueError:
+        return True
+
+
+def can_resume_manually(task: dict[str, Any]) -> bool:
+    status = task.get("status")
+    if status == "failed":
+        return True
+    if status in {"rate_limited", "scheduled"}:
+        return resume_time_reached(task)
+    return False
 
 
 def h(value: Any) -> str:
@@ -1209,6 +1277,8 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     next_task = next_retry_task(tasks)
     warnings = worker_state.get("warnings") or []
     last_scan = worker_state.get("last_scan") or "尚未扫描"
+    last_action = worker_state.get("last_action") or "暂无操作。点击按钮后，这里会显示扫描、登记或恢复结果。"
+    next_scan_at = worker_state.get("next_scan_at") or "即将执行"
     worker_enabled = not args.no_worker
     claude_ui_note = (
         "已开启 Claude 桌面 App 窗口扫描。若提示权限错误，请在 macOS 设置里给 Terminal 或 Python 开启辅助功能权限。"
@@ -1222,6 +1292,20 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
         platform = PLATFORM_LABELS.get(task.get("platform"), task.get("platform") or "-")
         retry_at = task.get("retry_at") or "-"
         prompt = short_text(task.get("prompt") or task.get("name") or task.get("id"))
+        if can_resume_manually(task):
+            action_html = (
+                f'<form method="post" action="/action/resume">'
+                f'<input type="hidden" name="id" value="{h(task.get("id"))}">'
+                f'<button>立即恢复</button></form>'
+            )
+        elif task.get("status") in {"rate_limited", "scheduled"} and task.get("auto_resume"):
+            action_html = '<span class="muted">到点自动恢复</span>'
+        elif task.get("status") in {"rate_limited", "scheduled"}:
+            action_html = '<span class="muted">等待手动处理</span>'
+        elif task.get("status") in {"running", "resuming"}:
+            action_html = '<span class="muted">执行中</span>'
+        else:
+            action_html = '<span class="muted">无需恢复</span>'
         row = f"""
         <tr>
           <td><span class="pill status-{h(task.get('status'))}">{h(status)}</span></td>
@@ -1233,7 +1317,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
           <td>{h(retry_at)}</td>
           <td>{h(task.get('cwd'))}</td>
           <td class="actions">
-            <form method="post" action="/action/resume"><input type="hidden" name="id" value="{h(task.get('id'))}"><button>立即恢复</button></form>
+            {action_html}
             <form method="post" action="/action/delete"><input type="hidden" name="id" value="{h(task.get('id'))}"><button class="danger">删除</button></form>
           </td>
         </tr>
@@ -1247,6 +1331,19 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     task_rows = "\n".join(rows) or """
       <tr><td colspan="6" class="empty">暂无托管任务。保持页面打开，Guardian 会继续扫描。</td></tr>
     """
+
+    plan_items = []
+    for task in pending:
+        command_preview = " ".join(build_command(task, resume=True))
+        plan_items.append(
+            f"<li><strong>{h(task.get('retry_at') or '到期后立即')}</strong> "
+            f"{h(PLATFORM_LABELS.get(task.get('platform'), task.get('platform')))} "
+            f"<span class='muted'>{h(short_text(task.get('id'), limit=80))}</span>"
+            f"<br><code>{h(short_text(command_preview, limit=260))}</code></li>"
+        )
+    if not plan_items:
+        plan_items.append("<li>当前没有自动恢复计划。原因：没有发现处于额度中断/等待恢复状态的任务。</li>")
+    plan_html = "".join(plan_items)
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -1330,6 +1427,18 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     .notice {{ margin: 18px 0; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }}
     ul {{ margin: 8px 0 0 18px; padding: 0; color: var(--muted); }}
     code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    .manual-form {{ display: grid; gap: 10px; margin-top: 12px; }}
+    textarea {{
+      width: 100%;
+      min-height: 82px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 10px;
+      font: inherit;
+      resize: vertical;
+    }}
     @media (max-width: 900px) {{
       header, main {{ padding-left: 16px; padding-right: 16px; }}
       .grid, .notice {{ grid-template-columns: 1fr; }}
@@ -1361,13 +1470,34 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
       <div class="card">
         <div class="label">最近扫描</div>
         <p>{h(last_scan)}</p>
-        <p class="muted">Dashboard 每 {args.interval} 秒后台扫描一次，页面每 20 秒自动刷新。</p>
+        <p class="muted">Dashboard 每 {args.interval} 秒后台扫描一次；下一次后台扫描：{h(next_scan_at)}。页面每 20 秒自动刷新。</p>
       </div>
       <div class="card">
         <div class="label">Claude 桌面 App 说明</div>
         <p>{h(claude_ui_note)}</p>
         <ul>{warnings_html}</ul>
       </div>
+    </section>
+
+    <section class="notice">
+      <div class="card">
+        <div class="label">最近操作结果</div>
+        <p>{h(last_action)}</p>
+      </div>
+      <div class="card">
+        <div class="label">自动恢复计划</div>
+        <ul>{plan_html}</ul>
+        <p class="muted">确认方式：这里出现具体时间和命令后，后台 worker 会每 {args.interval} 秒检查一次；到点后自动执行对应命令。</p>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:18px">
+      <div class="label">Claude 桌面 App 兜底登记</div>
+      <p class="muted">如果自动扫描读不到 Claude 窗口文字，把底部提示整句粘贴到这里，例如：Usage limit reached • Resets 2:30 AM • Keep working。</p>
+      <form method="post" action="/action/register-claude-app-text" class="manual-form">
+        <textarea name="limit_text" placeholder="粘贴 Claude 桌面 App 的额度提示文案"></textarea>
+        <button class="primary">解析并登记自动恢复</button>
+      </form>
     </section>
 
     <table>
@@ -1379,8 +1509,8 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
 
     <section class="card" style="margin-top:18px">
       <div class="label">推荐启动方式</div>
-      <p><code>python3 guardian.py dashboard --open</code></p>
-      <p class="muted">如果要监控 Claude 桌面 App 窗口，使用 <code>python3 guardian.py dashboard --scan-ui --open</code>，并先给 Terminal/Python 开辅助功能权限。</p>
+      <p><code>python3 guardian.py dashboard --scan-ui --open --keep-awake</code></p>
+      <p class="muted">如果只监控 Codex / Claude Code 本地会话，也可以使用 <code>python3 guardian.py dashboard --open</code>。监控 Claude 桌面 App 前，先给 Terminal/Python 开辅助功能权限。</p>
     </section>
   </main>
 </body>
@@ -1391,9 +1521,12 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     daemon_args = dashboard_daemon_args(args)
     lock = threading.Lock()
     stop_event = threading.Event()
+    keep_awake_process: subprocess.Popen[str] | None = None
     worker_state: dict[str, Any] = {
         "last_scan": "尚未扫描",
         "warnings": [],
+        "last_action": "暂无操作。点击按钮后，这里会显示扫描、登记或恢复结果。",
+        "next_scan_at": "即将执行",
     }
 
     def run_tick(*, scan_ui_override: bool | None = None) -> dict[str, Any]:
@@ -1405,6 +1538,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             worker_state["last_scan"] = summary["scanned_at"]
             worker_state["warnings"] = summary.get("warnings") or []
             worker_state["last_summary"] = summary
+            worker_state["next_scan_at"] = iso(local_now() + timedelta(seconds=args.interval))
             return summary
 
     def worker() -> None:
@@ -1449,21 +1583,54 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
             try:
                 if parsed.path == "/action/discover":
-                    run_tick(scan_ui_override=False)
+                    summary = run_tick(scan_ui_override=False)
+                    worker_state["last_action"] = (
+                        f"Codex / Claude Code 扫描完成：新发现 {len(summary['discovered'])} 个，"
+                        f"恢复 {len(summary['resumed'])} 个，警告 {len(summary['warnings'])} 条。"
+                    )
                 elif parsed.path == "/action/discover-ui":
-                    run_tick(scan_ui_override=True)
+                    summary = run_tick(scan_ui_override=True)
+                    worker_state["last_action"] = (
+                        f"Claude 桌面 App 扫描完成：新发现 {len(summary['discovered'])} 个，"
+                        f"恢复 {len(summary['resumed'])} 个，警告 {len(summary['warnings'])} 条。"
+                    )
                 elif parsed.path == "/action/tick":
-                    run_tick()
+                    summary = run_tick()
+                    worker_state["last_action"] = (
+                        f"到期任务检查完成：恢复 {len(summary['resumed'])} 个，"
+                        f"当前等待恢复 {len(pending_tasks())} 个。"
+                    )
                 elif parsed.path == "/action/delete" and task_id:
                     remove_task(task_id)
+                    worker_state["last_action"] = f"已删除任务：{task_id}"
+                elif parsed.path == "/action/register-claude-app-text":
+                    limit_text = (form.get("limit_text") or [""])[0]
+                    task = register_claude_app_limit_text(
+                        limit_text,
+                        cwd=args.cwd,
+                        auto_resume=True,
+                        dry_run=False,
+                    )
+                    worker_state["last_action"] = (
+                        f"已登记 Claude 桌面 App 自动恢复任务：{task['id']}，"
+                        f"恢复时间 {task.get('retry_at')}。"
+                    )
                 elif parsed.path == "/action/resume" and task_id:
                     task = get_task(task_id)
+                    if not can_resume_manually(task):
+                        worker_state["last_action"] = (
+                            f"任务 {task_id} 当前状态是 "
+                            f"{STATUS_LABELS.get(task.get('status'), task.get('status'))}，无需恢复。"
+                        )
+                        self.redirect_home()
+                        return
                     execute_task(
                         task,
                         resume=True,
                         warn_after=parse_duration("4h30m"),
                         no_popup=True,
                     )
+                    worker_state["last_action"] = f"已执行立即恢复：{task_id}"
                 else:
                     self.send_html("<h1>Bad Request</h1>", status=400)
                     return
@@ -1490,6 +1657,17 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         raise
     print(f"Agent Guardian 可视化页面已启动: {url}", flush=True)
     print("保持这个终端窗口打开，页面和后台扫描才会继续运行。按 Ctrl+C 停止。", flush=True)
+    if args.keep_awake:
+        if sys.platform == "darwin" and shutil.which("caffeinate"):
+            keep_awake_process = subprocess.Popen(
+                ["caffeinate", "-disu", "-w", str(os.getpid())],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            print("已开启 macOS 防休眠：Dashboard 运行期间会尽量保持唤醒。", flush=True)
+        else:
+            print("未开启防休眠：当前系统没有可用的 caffeinate。", flush=True)
     if args.scan_ui:
         print(
             "已开启 Claude 桌面 App 扫描；如果页面显示权限警告，请到 macOS 设置开启辅助功能权限。",
@@ -1503,6 +1681,8 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         print("\n已停止 Dashboard。")
     finally:
         stop_event.set()
+        if keep_awake_process and keep_awake_process.poll() is None:
+            keep_awake_process.terminate()
         server.server_close()
     return 0
 
@@ -1546,7 +1726,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--days", type=int, default=2)
     discover.add_argument("--cwd", default=os.getcwd())
     discover.add_argument("--auto-resume", choices=["ask", "yes", "no"], default="yes")
-    discover.add_argument("--codex-reached-threshold", type=float, default=100.0)
+    discover.add_argument("--codex-reached-threshold", type=float, default=DEFAULT_CODEX_NEAR_LIMIT_PERCENT)
     discover.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
     discover.add_argument("--dry-run", action="store_true")
     discover.add_argument("--json", action="store_true")
@@ -1587,7 +1767,7 @@ def build_parser() -> argparse.ArgumentParser:
     daemon.add_argument("--days", type=int, default=2)
     daemon.add_argument("--cwd", default=os.getcwd())
     daemon.add_argument("--auto-resume", choices=["ask", "yes", "no"], default="yes")
-    daemon.add_argument("--codex-reached-threshold", type=float, default=100.0)
+    daemon.add_argument("--codex-reached-threshold", type=float, default=DEFAULT_CODEX_NEAR_LIMIT_PERCENT)
     daemon.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
     daemon.add_argument("--dry-run", action="store_true")
     daemon.add_argument("--no-discover", dest="discover", action="store_false")
@@ -1601,9 +1781,10 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--platform", choices=["all", "claude", "codex"], default="all")
     dashboard.add_argument("--days", type=int, default=2)
     dashboard.add_argument("--cwd", default=os.getcwd())
-    dashboard.add_argument("--codex-reached-threshold", type=float, default=100.0)
+    dashboard.add_argument("--codex-reached-threshold", type=float, default=DEFAULT_CODEX_NEAR_LIMIT_PERCENT)
     dashboard.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
     dashboard.add_argument("--no-worker", action="store_true", help="serve the page without background scanning")
+    dashboard.add_argument("--keep-awake", action="store_true", help="keep macOS awake while dashboard is running")
     dashboard.add_argument("--open", action="store_true", help="open the dashboard in the default browser")
     dashboard.add_argument("--verbose", action="store_true")
     dashboard.set_defaults(func=cmd_dashboard)

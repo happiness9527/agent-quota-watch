@@ -15,7 +15,7 @@ cd "/Users/dbin/dev/sandbox/New project/agent-continuity-guardian"
 启动可视化页面：
 
 ```bash
-python3 guardian.py dashboard --open
+python3 guardian.py dashboard --scan-ui --open
 ```
 
 打开后访问：
@@ -34,13 +34,23 @@ http://127.0.0.1:8765
 
 保持这个终端窗口打开，后台扫描才会继续运行。默认每 30 秒扫描一次。
 
+如果你准备睡觉、希望 Mac 不休眠，可以这样启动：
+
+```bash
+python3 guardian.py dashboard --scan-ui --open --keep-awake
+```
+
+只要这个命令还在运行，macOS 会尽量保持唤醒；你按 `Ctrl+C` 停止后，守护页面也会停止。
+
 ## 你现在主要用 Codex 和 Claude 桌面 App
 
 Codex：
 
-- 直接用 `python3 guardian.py dashboard --open` 即可。
+- 直接用 `python3 guardian.py dashboard --scan-ui --open` 即可。
 - 工具会扫描 `~/.codex/sessions` 里的本地会话记录。
 - 如果 Codex 日志里有 `rate_limits.resets_at`，会自动读取真实恢复时间。
+- 默认在 Codex 使用量达到 85% 左右时就登记为“等待重置”，不必等到彻底中断。
+- 页面里会展示恢复时间和将要执行的 `codex exec resume ...` 命令。
 
 Claude 桌面 App：
 
@@ -62,6 +72,30 @@ python3 guardian.py dashboard --scan-ui --open
 
 如果没有这个权限，页面仍能运行，但 Claude 桌面 App 扫描会显示权限警告。
 
+如果 Claude 桌面 App 的窗口文字读不到，把底部提示整句粘贴到页面里的“Claude 桌面 App 兜底登记”，例如：
+
+```text
+Usage limit reached • Resets 2:30 AM • Keep working
+```
+
+Guardian 会自动解析 `Resets 2:30 AM`，加 2 分钟缓冲，并登记自动点击 `Keep working`。
+
+## 怎么确认到点真的会自动执行
+
+看页面上的三个位置：
+
+- 顶部“下一次恢复”：显示最近一个会自动恢复的具体时间。
+- “自动恢复计划”：显示每个任务的恢复时间，以及到点要执行的命令。
+- 任务列表“操作”：如果显示“到点自动恢复”，说明 `auto_resume=true` 且后台 worker 会按时间检查。
+
+后台 worker 默认每 30 秒检查一次。到达恢复时间后，它会执行计划里的命令，并把执行记录写到：
+
+```text
+~/.agent-continuity/logs/
+```
+
+如果你点击“立即扫描”后感觉没有反应，先看“最近操作结果”。那里会显示本次扫描发现了几个任务、恢复了几个任务、有没有权限警告。
+
 ## 为什么之前 `daemon` 看起来没有反应
 
 `daemon` 是纯终端守护模式。旧版本没发现任务时几乎不输出，所以看起来像卡住。现在已经改成中文状态输出：
@@ -81,7 +115,7 @@ Agent Guardian 守护进程已启动
 普通使用建议优先用可视化页面：
 
 ```bash
-python3 guardian.py dashboard --open
+python3 guardian.py dashboard --scan-ui --open
 ```
 
 ## 常用命令

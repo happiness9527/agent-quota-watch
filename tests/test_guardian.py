@@ -96,6 +96,33 @@ class GuardianCommandTests(unittest.TestCase):
         self.assertEqual(command[0], "osascript")
         self.assertIn("Keep working", " ".join(command))
 
+    def test_register_claude_app_limit_text_dry_run(self):
+        task = guardian.register_claude_app_limit_text(
+            "Usage limit reached • Resets 2:30 AM • Keep working",
+            cwd=tempfile.gettempdir(),
+            auto_resume=True,
+            dry_run=True,
+        )
+        self.assertEqual(task["platform"], "claude-app")
+        self.assertEqual(task["status"], "rate_limited")
+        self.assertTrue(task["retry_at"])
+
+    def test_register_scheduled_codex_task_dry_run(self):
+        task = guardian.register_discovered_task(
+            platform="codex",
+            cwd=tempfile.gettempdir(),
+            session="session-1",
+            prompt="near quota",
+            retry_at=datetime(2026, 6, 7, 2, 17, tzinfo=timezone.utc),
+            source_key="codex-rollout:session-1",
+            source="/tmp/rollout.jsonl",
+            auto_resume=True,
+            dry_run=True,
+            status="scheduled",
+        )
+        self.assertEqual(task["platform"], "codex")
+        self.assertEqual(task["status"], "scheduled")
+
 
 class GuardianTaskStateTests(unittest.TestCase):
     def test_due_for_resume_requires_auto_resume(self):
@@ -113,6 +140,25 @@ class GuardianTaskStateTests(unittest.TestCase):
             "retry_at": guardian.iso(guardian.local_now() - timedelta(minutes=1)),
         }
         self.assertTrue(guardian.due_for_resume(task))
+
+    def test_completed_task_is_not_manually_resumable(self):
+        self.assertFalse(guardian.can_resume_manually({"status": "completed"}))
+        self.assertTrue(
+            guardian.can_resume_manually(
+                {
+                    "status": "rate_limited",
+                    "retry_at": guardian.iso(guardian.local_now() - timedelta(minutes=1)),
+                }
+            )
+        )
+        self.assertFalse(
+            guardian.can_resume_manually(
+                {
+                    "status": "scheduled",
+                    "retry_at": guardian.iso(guardian.local_now() + timedelta(hours=1)),
+                }
+            )
+        )
 
 
 class GuardianCliTests(unittest.TestCase):
@@ -145,11 +191,12 @@ class GuardianCliTests(unittest.TestCase):
 
     def test_dashboard_command_parses(self):
         args = guardian.build_parser().parse_args(
-            ["dashboard", "--scan-ui", "--open", "--interval", "15"]
+            ["dashboard", "--scan-ui", "--open", "--keep-awake", "--interval", "15"]
         )
         self.assertEqual(args.command, "dashboard")
         self.assertTrue(args.scan_ui)
         self.assertTrue(args.open)
+        self.assertTrue(args.keep_awake)
         self.assertEqual(args.interval, 15)
 
     def test_dashboard_port_in_use_returns_success(self):
