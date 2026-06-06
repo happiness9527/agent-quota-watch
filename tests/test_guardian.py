@@ -19,7 +19,9 @@ class GuardianParsingTests(unittest.TestCase):
     def test_detects_quota_text(self):
         self.assertTrue(guardian.is_quota_text("Usage limit reached. Try again in 5 hours."))
         self.assertTrue(guardian.is_quota_text("HTTP 429 rate limited"))
+        self.assertTrue(guardian.is_quota_text("Quota exceeded. Please retry later."))
         self.assertFalse(guardian.is_quota_text("Unit tests failed with exit code 1"))
+        self.assertFalse(guardian.is_quota_text("We are discussing quota automation design"))
 
     def test_infer_retry_at_from_duration(self):
         now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
@@ -30,6 +32,22 @@ class GuardianParsingTests(unittest.TestCase):
         now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
         retry_at = guardian.infer_retry_at("quota exceeded", now=now)
         self.assertEqual(retry_at, now + guardian.DEFAULT_RETRY_DELAY)
+
+    def test_infer_retry_at_from_reset_wall_time(self):
+        now = datetime(2026, 6, 6, 23, 9, tzinfo=timezone.utc)
+        retry_at = guardian.infer_retry_at("Usage limit reached • Resets 2:30 AM", now=now)
+        self.assertEqual(
+            retry_at,
+            datetime(2026, 6, 7, 2, 32, tzinfo=timezone.utc),
+        )
+
+    def test_infer_retry_at_from_chinese_reset_wall_time(self):
+        now = datetime(2026, 6, 6, 23, 9, tzinfo=timezone.utc)
+        retry_at = guardian.infer_retry_at("额度已用尽，凌晨2:30恢复", now=now)
+        self.assertEqual(
+            retry_at,
+            datetime(2026, 6, 7, 2, 32, tzinfo=timezone.utc),
+        )
 
 
 class GuardianCommandTests(unittest.TestCase):
@@ -68,6 +86,12 @@ class GuardianCommandTests(unittest.TestCase):
         self.assertEqual(command[:2], ["codex", "exec"])
         self.assertIn("用户任务", command[-1])
 
+    def test_claude_app_resume_command(self):
+        task = self.make_task("claude-app", "ui")
+        command = guardian.build_command(task, resume=True)
+        self.assertEqual(command[0], "osascript")
+        self.assertIn("Keep working", " ".join(command))
+
 
 class GuardianTaskStateTests(unittest.TestCase):
     def test_due_for_resume_requires_auto_resume(self):
@@ -98,6 +122,22 @@ class GuardianCliTests(unittest.TestCase):
         self.assertEqual(args.auto_resume, "yes")
         self.assertTrue(args.no_wait)
         self.assertEqual(args.prompt, ["dry", "task"])
+
+    def test_discover_command_parses(self):
+        args = guardian.build_parser().parse_args(["discover", "--dry-run", "--scan-ui"])
+        self.assertEqual(args.command, "discover")
+        self.assertTrue(args.dry_run)
+        self.assertTrue(args.scan_ui)
+
+    def test_update_and_delete_commands_parse(self):
+        update_args = guardian.build_parser().parse_args(
+            ["update", "task-1", "--retry-after", "5h10m", "--auto-resume", "yes"]
+        )
+        self.assertEqual(update_args.command, "update")
+        self.assertEqual(update_args.retry_after, "5h10m")
+
+        delete_args = guardian.build_parser().parse_args(["delete", "task-1"])
+        self.assertEqual(delete_args.command, "delete")
 
 
 if __name__ == "__main__":

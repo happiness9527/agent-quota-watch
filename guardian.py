@@ -30,19 +30,23 @@ TASKS_FILE = DEFAULT_HOME / "tasks.json"
 LOG_DIR = DEFAULT_HOME / "logs"
 DEFAULT_RETRY_DELAY = timedelta(hours=5, minutes=10)
 DEFAULT_WARN_AFTER = timedelta(hours=4, minutes=30)
+DEFAULT_RESET_BUFFER = timedelta(minutes=2)
 
 QUOTA_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"\brate limit(?:ed|s)?\b",
-        r"\busage limit\b",
-        r"\bquota\b",
-        r"\blimit reached\b",
+        r"\brate limited\b",
+        r"\brate limits? reached\b",
+        r"\brate limit exceeded\b",
+        r"\busage limit reached\b",
+        r"\bquota\s+(?:exceeded|reached|limit|limited|used up)\b",
+        r"\b(?:exceeded|reached|hit)\s+(?:the\s+)?quota\b",
         r"\busage cap\b",
-        r"\b429\b",
-        r"try again in",
-        r"retry after",
-        r"available again",
+        r"\b(?:http\s*)?429\b.*\brate\b",
+        r"try again in \d",
+        r"retry after \d",
+        r"额度已用尽",
+        r"达到额度限制",
     )
 ]
 
@@ -165,6 +169,13 @@ def get_task(task_id: str) -> dict[str, Any]:
     raise SystemExit(f"task not found: {task_id}")
 
 
+def get_task_by_source_key(source_key: str) -> dict[str, Any] | None:
+    for task in load_tasks():
+        if task.get("source_key") == source_key:
+            return task
+    return None
+
+
 def task_id_for(platform: str, cwd: str) -> str:
     slug = Path(cwd).name.lower().replace(" ", "-") or "task"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -210,6 +221,15 @@ def update_task(task: dict[str, Any], **changes: Any) -> dict[str, Any]:
     task["updated_at"] = iso(local_now())
     upsert_task(task)
     return task
+
+
+def remove_task(task_id: str) -> bool:
+    tasks = load_tasks()
+    kept = [task for task in tasks if task["id"] != task_id]
+    if len(kept) == len(tasks):
+        return False
+    save_tasks(kept)
+    return True
 
 
 def ensure_checkpoint(task: dict[str, Any]) -> None:
@@ -275,11 +295,40 @@ def build_command(task: dict[str, Any], *, resume: bool) -> list[str]:
             return ["codex", "exec", "resume", "--last", wrapped_resume_prompt(task)]
         return ["codex", "exec", wrapped_start_prompt(task)]
 
+    if platform == "claude-app":
+        return [
+            "osascript",
+            "-e",
+            'tell application "Claude" to activate',
+            "-e",
+            "delay 1",
+            "-e",
+            (
+                'tell application "System Events" to tell process "Claude" '
+                'to click (first button of front window whose name contains "Keep working")'
+            ),
+        ]
+
     raise ValueError(f"unsupported platform: {platform}")
 
 
 def is_quota_text(text: str) -> bool:
     return any(pattern.search(text) for pattern in QUOTA_PATTERNS)
+
+
+def is_quota_signal_line(text: str) -> bool:
+    if not is_quota_text(text):
+        return False
+    lowered = text.lower()
+    ignored_contexts = (
+        "如果遇到 quota/rate limit/usage limit",
+        "quota detection is heuristic",
+        "contains words such as",
+        "is treated as rate-limited",
+        "执行要求",
+        "agent guardian 托管",
+    )
+    return not any(context in lowered for context in ignored_contexts)
 
 
 def extract_duration_after_keyword(text: str) -> timedelta | None:
@@ -309,8 +358,74 @@ def extract_duration_after_keyword(text: str) -> timedelta | None:
 
 def infer_retry_at(text: str, *, now: datetime | None = None) -> datetime:
     now = now or local_now()
+    wall_time = extract_reset_wall_time(text, now=now)
+    if wall_time is not None:
+        return wall_time + DEFAULT_RESET_BUFFER
     duration = extract_duration_after_keyword(text)
     return now + (duration or DEFAULT_RETRY_DELAY)
+
+
+RESET_TIME_RE = re.compile(
+    r"\b(?:resets?|reset|available again|try again)\s*(?:at|around|by)?\s*"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?\b",
+    re.IGNORECASE,
+)
+
+CHINESE_RESET_TIME_RE = re.compile(
+    r"(?:重置|恢复|可用).*?(?P<period>凌晨|上午|中午|下午|晚上)?\s*(?P<hour>\d{1,2})(?:[:：](?P<minute>\d{2}))?"
+)
+
+CHINESE_RESET_TIME_REVERSE_RE = re.compile(
+    r"(?P<period>凌晨|上午|中午|下午|晚上)?\s*(?P<hour>\d{1,2})(?:[:：](?P<minute>\d{2}))?.*?(?:重置|恢复|可用)"
+)
+
+
+def wall_time_candidate(
+    hour: int,
+    minute: int,
+    ampm: str | None,
+    now: datetime,
+) -> datetime | None:
+    if minute < 0 or minute > 59:
+        return None
+    if ampm:
+        ampm = ampm.lower()
+        if hour < 1 or hour > 12:
+            return None
+        if ampm == "am":
+            hour = 0 if hour == 12 else hour
+        elif ampm == "pm":
+            hour = 12 if hour == 12 else hour + 12
+    elif hour > 23:
+        return None
+
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def extract_reset_wall_time(text: str, *, now: datetime | None = None) -> datetime | None:
+    now = now or local_now()
+    match = RESET_TIME_RE.search(text)
+    if match:
+        hour = int(match.group("hour"))
+        minute = int(match.group("minute") or 0)
+        return wall_time_candidate(hour, minute, match.group("ampm"), now)
+
+    match = CHINESE_RESET_TIME_RE.search(text)
+    if not match:
+        match = CHINESE_RESET_TIME_REVERSE_RE.search(text)
+    if not match:
+        return None
+    hour = int(match.group("hour"))
+    minute = int(match.group("minute") or 0)
+    period = match.group("period")
+    if period in {"下午", "晚上"} and hour < 12:
+        hour += 12
+    if period in {"凌晨", "上午"} and hour == 12:
+        hour = 0
+    return wall_time_candidate(hour, minute, None, now)
 
 
 def applescript_quote(text: str) -> str:
@@ -490,6 +605,308 @@ def run_with_continuity(
     return result.exit_code or 0
 
 
+def json_text(value: Any, *, limit: int = 20000) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        text = str(value)
+    return text[-limit:]
+
+
+def recent_files(root: Path, pattern: str, *, days: int, max_files: int = 200) -> list[Path]:
+    if not root.exists():
+        return []
+    cutoff = time.time() - days * 86400
+    files = [p for p in root.glob(pattern) if p.is_file() and p.stat().st_mtime >= cutoff]
+    return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[:max_files]
+
+
+def read_tail_text(path: Path, *, max_bytes: int = 1_000_000) -> str:
+    size = path.stat().st_size
+    with path.open("rb") as fh:
+        if size > max_bytes:
+            fh.seek(size - max_bytes)
+        return fh.read().decode("utf-8", errors="ignore")
+
+
+def datetime_from_epoch(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number > 10_000_000_000:
+        number /= 1000
+    return datetime.fromtimestamp(number, tz=local_now().tzinfo)
+
+
+def register_discovered_task(
+    *,
+    platform: str,
+    cwd: str,
+    session: str,
+    prompt: str,
+    retry_at: datetime,
+    source_key: str,
+    source: str,
+    auto_resume: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    retry_at_text = iso(retry_at)
+    existing = get_task_by_source_key(source_key)
+    if existing:
+        existing.update(
+            {
+                "status": "rate_limited",
+                "retry_at": retry_at_text,
+                "auto_resume": auto_resume,
+                "source": source,
+                "prompt": existing.get("prompt") or prompt,
+            }
+        )
+        existing["updated_at"] = iso(local_now())
+        if not dry_run:
+            upsert_task(existing)
+            ensure_checkpoint(existing)
+        return existing
+
+    task = make_task(
+        platform=platform,
+        cwd=cwd,
+        prompt=prompt,
+        name=None,
+        session=session,
+        auto_resume=auto_resume,
+        retry_at=retry_at_text,
+    )
+    task["source_key"] = source_key
+    task["source"] = source
+    task["status"] = "rate_limited"
+    if not dry_run:
+        upsert_task(task)
+        ensure_checkpoint(task)
+    return task
+
+
+def discover_claude_cli(*, days: int, auto_resume: bool, dry_run: bool) -> list[dict[str, Any]]:
+    discovered: list[dict[str, Any]] = []
+    root = Path.home() / ".claude" / "projects"
+    for path in recent_files(root, "*/*.jsonl", days=days, max_files=30):
+        tail = read_tail_text(path, max_bytes=256_000)
+        quota_lines = [line for line in tail.splitlines() if is_quota_signal_line(line)]
+        if not quota_lines:
+            continue
+
+        session_id = path.stem
+        cwd = str(Path.home())
+        last_prompt = ""
+        title = ""
+        for raw in tail.splitlines():
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            session_id = obj.get("sessionId") or obj.get("session_id") or session_id
+            cwd = obj.get("cwd") or cwd
+            if obj.get("type") == "last-prompt":
+                last_prompt = obj.get("lastPrompt") or last_prompt
+            if obj.get("type") in {"ai-title", "custom-title"}:
+                title = obj.get("aiTitle") or obj.get("customTitle") or title
+
+        prompt = last_prompt or title or "Auto-discovered Claude Code quota-limited task"
+        quota_context = "\n".join(quota_lines[-20:])
+        retry_at = infer_retry_at(quota_context)
+        discovered.append(
+            register_discovered_task(
+                platform="claude",
+                cwd=cwd,
+                session=session_id,
+                prompt=prompt,
+                retry_at=retry_at,
+                source_key=f"claude-jsonl:{session_id}",
+                source=str(path),
+                auto_resume=auto_resume,
+                dry_run=dry_run,
+            )
+        )
+    return discovered
+
+
+def codex_session_id_from_path(path: Path) -> str:
+    match = re.search(
+        r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+        path.name,
+        re.IGNORECASE,
+    )
+    return match.group(1) if match else path.stem
+
+
+def discover_codex_sessions(
+    *,
+    days: int,
+    auto_resume: bool,
+    dry_run: bool,
+    reached_threshold: float,
+) -> list[dict[str, Any]]:
+    discovered: list[dict[str, Any]] = []
+    roots = [Path.home() / ".codex" / "sessions", Path.home() / ".codex" / "archived_sessions"]
+    files: list[Path] = []
+    for root in roots:
+        files.extend(recent_files(root, "**/rollout-*.jsonl", days=days, max_files=30))
+
+    for path in sorted(files, key=lambda p: p.stat().st_mtime, reverse=True):
+        session_id = codex_session_id_from_path(path)
+        cwd = str(Path.home())
+        prompt = "Auto-discovered Codex quota-limited task"
+        latest_retry_at: datetime | None = None
+        reached = False
+
+        for raw in read_tail_text(path, max_bytes=512_000).splitlines():
+            if (
+                "rate_limits" not in raw
+                and "session_meta" not in raw
+                and '"user_message"' not in raw
+            ):
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            payload = obj.get("payload") or {}
+            if obj.get("type") == "session_meta":
+                session_id = payload.get("id") or session_id
+                cwd = payload.get("cwd") or cwd
+
+            if obj.get("type") == "event_msg" and payload.get("type") == "user_message":
+                message = payload.get("message")
+                if isinstance(message, str) and message.strip():
+                    prompt = message.strip()[:800]
+
+            rate_limits = payload.get("rate_limits") if isinstance(payload, dict) else None
+            if not isinstance(rate_limits, dict):
+                continue
+
+            if rate_limits.get("rate_limit_reached_type"):
+                reached = True
+
+            for bucket_name in ("primary", "secondary"):
+                bucket = rate_limits.get(bucket_name)
+                if not isinstance(bucket, dict):
+                    continue
+                used = bucket.get("used_percent")
+                try:
+                    used_float = float(used)
+                except (TypeError, ValueError):
+                    used_float = 0.0
+                if used_float >= reached_threshold:
+                    reached = True
+                reset = datetime_from_epoch(bucket.get("resets_at"))
+                if reset and reset > local_now():
+                    if latest_retry_at is None or reset < latest_retry_at:
+                        latest_retry_at = reset
+
+        if not reached:
+            continue
+        discovered.append(
+            register_discovered_task(
+                platform="codex",
+                cwd=cwd,
+                session=session_id,
+                prompt=prompt,
+                retry_at=latest_retry_at or (local_now() + DEFAULT_RETRY_DELAY),
+                source_key=f"codex-rollout:{session_id}",
+                source=str(path),
+                auto_resume=auto_resume,
+                dry_run=dry_run,
+            )
+        )
+    return discovered
+
+
+def read_claude_app_text() -> tuple[str, str | None]:
+    if sys.platform != "darwin" or not shutil.which("osascript"):
+        return "", "Claude App UI scanning is only supported on macOS with osascript."
+    script = (
+        'tell application "System Events" to tell process "Claude" '
+        "to get value of every static text of every window"
+    )
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        return "", result.stderr.strip() or result.stdout.strip()
+    return result.stdout, None
+
+
+def discover_claude_app_ui(
+    *,
+    auto_resume: bool,
+    dry_run: bool,
+    cwd: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    text, error = read_claude_app_text()
+    if error:
+        return [], error
+    if not is_quota_text(text):
+        return [], None
+
+    retry_at = infer_retry_at(text)
+    task = register_discovered_task(
+        platform="claude-app",
+        cwd=cwd,
+        session="ui",
+        prompt="Auto-discovered Claude App usage-limit task. Resume by clicking Keep working.",
+        retry_at=retry_at,
+        source_key="claude-app:front-window",
+        source="Claude App front window",
+        auto_resume=auto_resume,
+        dry_run=dry_run,
+    )
+    return [task], None
+
+
+def run_discovery(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[str]]:
+    platforms = {args.platform} if args.platform != "all" else {"claude", "codex"}
+    warnings: list[str] = []
+    auto_resume = parse_auto_resume(args.auto_resume)
+    auto_resume_bool = True if auto_resume is None else auto_resume
+    discovered: list[dict[str, Any]] = []
+
+    if "claude" in platforms:
+        discovered.extend(
+            discover_claude_cli(
+                days=args.days,
+                auto_resume=auto_resume_bool,
+                dry_run=args.dry_run,
+            )
+        )
+    if "codex" in platforms:
+        discovered.extend(
+            discover_codex_sessions(
+                days=args.days,
+                auto_resume=auto_resume_bool,
+                dry_run=args.dry_run,
+                reached_threshold=args.codex_reached_threshold,
+            )
+        )
+    if args.scan_ui:
+        ui_tasks, error = discover_claude_app_ui(
+            auto_resume=auto_resume_bool,
+            dry_run=args.dry_run,
+            cwd=args.cwd,
+        )
+        discovered.extend(ui_tasks)
+        if error:
+            warnings.append(error)
+    return discovered, warnings
+
+
 def parse_auto_resume(value: str) -> bool | None:
     if value == "ask":
         return None
@@ -578,6 +995,57 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update(args: argparse.Namespace) -> int:
+    task = get_task(args.task_id)
+    changes: dict[str, Any] = {}
+    if args.retry_at:
+        changes["retry_at"] = iso(parse_datetime(args.retry_at))
+        changes["status"] = "rate_limited"
+    if args.retry_after:
+        changes["retry_at"] = iso(local_now() + parse_duration(args.retry_after))
+        changes["status"] = "rate_limited"
+    if args.auto_resume:
+        changes["auto_resume"] = parse_auto_resume(args.auto_resume)
+    if args.status:
+        changes["status"] = args.status
+    update_task(task, **changes)
+    print(f"已更新任务: {task['id']}")
+    return 0
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    if remove_task(args.task_id):
+        print(f"已删除任务: {args.task_id}")
+        return 0
+    raise SystemExit(f"task not found: {args.task_id}")
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    discovered, warnings = run_discovery(args)
+    if args.json:
+        print(
+            json.dumps(
+                {"tasks": discovered, "warnings": warnings},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+
+    for warning in warnings:
+        print(f"警告: {warning}")
+    if not discovered:
+        print("未发现新的额度中断任务。")
+        return 0
+    for task in discovered:
+        print(
+            f"已发现/登记: {task['id']}  "
+            f"{task['platform']}  session={task.get('session')}  "
+            f"retry_at={task.get('retry_at')}"
+        )
+    return 0
+
+
 def cmd_resume(args: argparse.Namespace) -> int:
     task = get_task(args.task_id)
     result = execute_task(
@@ -601,6 +1069,13 @@ def due_for_resume(task: dict[str, Any]) -> bool:
 
 
 def daemon_tick(args: argparse.Namespace) -> None:
+    if args.discover:
+        discovered, warnings = run_discovery(args)
+        for warning in warnings:
+            print(f"发现扫描警告: {warning}")
+        for task in discovered:
+            print(f"自动发现额度中断任务: {task['id']} retry_at={task.get('retry_at')}")
+
     for task in load_tasks():
         if not due_for_resume(task):
             continue
@@ -650,7 +1125,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.set_defaults(func=cmd_run)
 
     add = sub.add_parser("add", help="register an existing interrupted session")
-    add.add_argument("--platform", choices=["claude", "codex"], required=True)
+    add.add_argument("--platform", choices=["claude", "codex", "claude-app"], required=True)
     add.add_argument("--cwd", default=os.getcwd())
     add.add_argument("--session", default="last")
     add.add_argument("--name")
@@ -660,6 +1135,17 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--retry-at")
     add.set_defaults(func=cmd_add)
 
+    discover = sub.add_parser("discover", help="auto-discover quota-limited local sessions")
+    discover.add_argument("--platform", choices=["all", "claude", "codex"], default="all")
+    discover.add_argument("--days", type=int, default=2)
+    discover.add_argument("--cwd", default=os.getcwd())
+    discover.add_argument("--auto-resume", choices=["ask", "yes", "no"], default="yes")
+    discover.add_argument("--codex-reached-threshold", type=float, default=100.0)
+    discover.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
+    discover.add_argument("--dry-run", action="store_true")
+    discover.add_argument("--json", action="store_true")
+    discover.set_defaults(func=cmd_discover)
+
     list_cmd = sub.add_parser("list", help="list supervised tasks")
     list_cmd.add_argument("--json", action="store_true")
     list_cmd.set_defaults(func=cmd_list)
@@ -667,6 +1153,18 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show", help="show one task as JSON")
     show.add_argument("task_id")
     show.set_defaults(func=cmd_show)
+
+    update = sub.add_parser("update", help="update a registered task")
+    update.add_argument("task_id")
+    update.add_argument("--retry-after")
+    update.add_argument("--retry-at")
+    update.add_argument("--auto-resume", choices=["ask", "yes", "no"])
+    update.add_argument("--status")
+    update.set_defaults(func=cmd_update)
+
+    delete = sub.add_parser("delete", help="delete a registered task")
+    delete.add_argument("task_id")
+    delete.set_defaults(func=cmd_delete)
 
     resume = sub.add_parser("resume", help="resume one registered task now")
     resume.add_argument("task_id")
@@ -679,6 +1177,15 @@ def build_parser() -> argparse.ArgumentParser:
     daemon.add_argument("--once", action="store_true")
     daemon.add_argument("--warn-after", default="4h30m")
     daemon.add_argument("--no-popup", action="store_true")
+    daemon.add_argument("--platform", choices=["all", "claude", "codex"], default="all")
+    daemon.add_argument("--days", type=int, default=2)
+    daemon.add_argument("--cwd", default=os.getcwd())
+    daemon.add_argument("--auto-resume", choices=["ask", "yes", "no"], default="yes")
+    daemon.add_argument("--codex-reached-threshold", type=float, default=100.0)
+    daemon.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
+    daemon.add_argument("--dry-run", action="store_true")
+    daemon.add_argument("--no-discover", dest="discover", action="store_false")
+    daemon.set_defaults(discover=True)
     daemon.set_defaults(func=cmd_daemon)
 
     return parser
