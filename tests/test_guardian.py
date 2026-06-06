@@ -1,6 +1,10 @@
+import contextlib
+import io
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import sys
@@ -147,6 +151,22 @@ class GuardianCliTests(unittest.TestCase):
         self.assertTrue(args.scan_ui)
         self.assertTrue(args.open)
         self.assertEqual(args.interval, 15)
+
+    def test_dashboard_port_in_use_returns_success(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), type("Handler", (object,), {}))
+        port = server.server_address[1]
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            args = guardian.build_parser().parse_args(
+                ["dashboard", "--host", "127.0.0.1", "--port", str(port), "--no-worker"]
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(guardian.cmd_dashboard(args), 0)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ It does not read platform auth files or private quota databases.
 from __future__ import annotations
 
 import argparse
+import errno
 import html
 import json
 import os
@@ -1474,8 +1475,19 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
                 return
             self.redirect_home()
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), Handler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            print("Agent Guardian 可视化页面已经在运行。")
+            print(f"已有页面地址: {url}")
+            print("不用重复启动，直接打开上面的地址即可。")
+            print(f"如果你想另开一个页面，可以换端口: python3 guardian.py dashboard --port {args.port + 1} --open")
+            if args.open:
+                webbrowser.open(url)
+            return 0
+        raise
     print(f"Agent Guardian 可视化页面已启动: {url}", flush=True)
     print("保持这个终端窗口打开，页面和后台扫描才会继续运行。按 Ctrl+C 停止。", flush=True)
     if args.scan_ui:
