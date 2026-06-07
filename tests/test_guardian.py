@@ -104,9 +104,17 @@ class GuardianCommandTests(unittest.TestCase):
         task = self.make_task("claude-app", "ui")
         command = guardian.build_command(task, resume=True)
         self.assertEqual(command[0], "osascript")
-        self.assertIn("Keep working", " ".join(command))
-        self.assertIn("clickButtonByName", command[-1])
+        self.assertNotIn('clickButtonByName(front window, "Keep working")', command[-1])
+        self.assertIn("Wait until", command[-1])
+        self.assertIn("submitContinuationPrompt", command[-1])
+        self.assertIn("请继续完成刚才因为额度限制中断的任务", command[-1])
         self.assertIn("findQuotaText", command[-1])
+
+    def test_claude_app_resume_action_description(self):
+        task = self.make_task("claude-app", "ui")
+        description = guardian.resume_action_description(task)
+        self.assertIn("自动发送继续任务提示", description)
+        self.assertNotIn("Keep working", description)
 
     def test_register_claude_app_limit_text_dry_run(self):
         task = guardian.register_claude_app_limit_text(

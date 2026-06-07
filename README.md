@@ -78,14 +78,20 @@ python3 guardian.py dashboard --scan-ui --open
 Usage limit reached • Resets 2:30 AM • Keep working
 ```
 
-Guardian 会自动解析 `Resets 2:30 AM`，加 2 分钟缓冲，并登记自动点击 `Keep working`。
+Guardian 会自动解析 `Resets 2:30 AM`，加 2 分钟缓冲，并登记自动恢复计划。
+
+注意：Claude 桌面 App 里的 `Keep working` 不是“继续任务”按钮，而是引导升级/加购用量的入口。Guardian 不会把它当作续跑按钮使用。到恢复时间后，Guardian 会刷新 Claude 桌面 App，确认额度提示消失，然后在当前对话里自动发送：
+
+```text
+请继续完成刚才因为额度限制中断的任务。请先简要回顾上一步已经完成到哪里，然后直接继续完成剩余工作。
+```
 
 ## 怎么确认到点真的会自动执行
 
 看页面上的三个位置：
 
 - 顶部“下一次恢复”：显示最近一个会自动恢复的具体时间。
-- “自动恢复计划”：显示每个任务的恢复时间，以及到点要执行的命令。
+- “自动恢复计划”：显示每个任务的恢复时间，以及到点要执行的动作。Claude 桌面 App 会显示“刷新 Claude 桌面 App，确认额度提示消失后，在当前对话自动发送继续任务提示”。
 - 任务列表“操作”：如果显示“到点自动恢复”，说明 `auto_resume=true` 且后台 worker 会按时间检查。
 
 后台 worker 默认每 30 秒检查一次。到达恢复时间后，它会执行计划里的命令，并把执行记录写到：

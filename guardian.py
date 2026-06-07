@@ -311,7 +311,7 @@ end elementText
 on findQuotaText(elementRef)
   tell application "System Events"
     set currentText to my elementText(elementRef)
-    if currentText contains "Usage limit" or currentText contains "usage limit" or currentText contains "5-hour limit" or currentText contains "resets" or currentText contains "reset" then
+    if (length of currentText) < 500 and (currentText contains "Usage limit" or currentText contains "usage limit" or currentText contains "5-hour limit" or currentText contains "resets" or currentText contains "reset" or currentText contains "Need more usage" or currentText contains "Get usage credits" or currentText contains "Wait until") then
       return currentText
     end if
     try
@@ -375,22 +375,117 @@ on clickButtonByName(elementRef, targetName)
   return false
 end clickButtonByName
 
+on buttonExistsByName(elementRef, targetName)
+  tell application "System Events"
+    try
+      set elementRole to role of elementRef as text
+    on error
+      set elementRole to ""
+    end try
+    try
+      set elementName to name of elementRef as text
+    on error
+      set elementName to ""
+    end try
+    if elementRole is "AXButton" and elementName contains targetName then
+      return true
+    end if
+    try
+      set childElements to UI elements of elementRef
+    on error
+      set childElements to {}
+    end try
+    set childCount to count of childElements
+    repeat with childIndex from childCount to 1 by -1
+      if my buttonExistsByName(item childIndex of childElements, targetName) then return true
+    end repeat
+  end tell
+  return false
+end buttonExistsByName
+
+on submitContinuationPrompt(elementRef, promptText)
+  tell application "System Events"
+    set currentText to my elementText(elementRef)
+    try
+      set elementRole to role of elementRef as text
+    on error
+      set elementRole to ""
+    end try
+    try
+      set elementRoleDescription to role description of elementRef as text
+    on error
+      set elementRoleDescription to ""
+    end try
+
+    set isTextInput to false
+    if elementRole contains "Text" or elementRole contains "text" then set isTextInput to true
+    if elementRoleDescription contains "Text" or elementRoleDescription contains "text" or elementRoleDescription contains "文本" then set isTextInput to true
+
+    set looksLikeComposer to false
+    if currentText contains "Write a message" or currentText contains "Write your prompt" or currentText contains "Send a message" or currentText contains "message" or currentText contains "Message" or currentText contains "prompt" then set looksLikeComposer to true
+
+    if isTextInput and looksLikeComposer then
+      try
+        set focused of elementRef to true
+      end try
+      click elementRef
+      delay 0.2
+      set previousClipboard to the clipboard
+      set the clipboard to promptText
+      delay 0.2
+      keystroke "v" using command down
+      delay 0.2
+      key code 36
+      delay 0.2
+      set the clipboard to previousClipboard
+      return true
+    end if
+
+    try
+      set childElements to UI elements of elementRef
+    on error
+      set childElements to {}
+    end try
+    set childCount to count of childElements
+    repeat with childIndex from childCount to 1 by -1
+      if my submitContinuationPrompt(item childIndex of childElements, promptText) then return true
+    end repeat
+  end tell
+  return false
+end submitContinuationPrompt
+
 tell application "Claude" to activate
 delay 0.7
 tell application "System Events" to tell process "Claude"
-  set clickedKeepWorking to my clickButtonByName(front window, "Keep working")
-  delay 1
+  try
+    my clickButtonByName(front window, "Wait until")
+    delay 0.7
+  end try
+
+  keystroke "r" using command down
+  delay 4
+
+  try
+    my clickButtonByName(front window, "Wait until")
+    delay 0.7
+  end try
+
+  if my buttonExistsByName(front window, "Get usage credits") or my buttonExistsByName(front window, "Wait until") then
+    return my findQuotaText(front window)
+  end if
+
+  set continuationPrompt to "请继续完成刚才因为额度限制中断的任务。请先简要回顾上一步已经完成到哪里，然后直接继续完成剩余工作。"
+  if my submitContinuationPrompt(front window, continuationPrompt) then
+    delay 1.5
+    if my buttonExistsByName(front window, "Get usage credits") or my buttonExistsByName(front window, "Wait until") then
+      return my findQuotaText(front window)
+    end if
+    return "submitted Claude continuation prompt"
+  end if
+
   set quotaText to my findQuotaText(front window)
-  if quotaText is not "" then
-    try
-      my clickButtonByName(front window, "Wait until")
-    end try
-    return quotaText
-  end if
-  if clickedKeepWorking then
-    return "clicked Keep working"
-  end if
-  error "Keep working button not found in Claude window"
+  if quotaText is not "" then return quotaText
+  error "Claude message input not found after quota reset"
 end tell
 '''
 )
@@ -989,7 +1084,7 @@ def discover_claude_app_ui(
         platform="claude-app",
         cwd=cwd,
         session="ui",
-        prompt="Auto-discovered Claude App usage-limit task. Resume by clicking Keep working.",
+        prompt="Auto-discovered Claude App usage-limit task. Resume by submitting a continuation prompt after reset.",
         retry_at=retry_at,
         source_key="claude-app:front-window",
         source="Claude App front window",
@@ -1355,6 +1450,13 @@ def short_text(value: Any, *, limit: int = 160) -> str:
     return text[: limit - 1] + "…"
 
 
+def resume_action_description(task: dict[str, Any]) -> str:
+    platform = task.get("platform")
+    if platform == "claude-app":
+        return "刷新 Claude 桌面 App，确认额度提示消失后，在当前对话自动发送继续任务提示。"
+    return " ".join(build_command(task, resume=True))
+
+
 def dashboard_daemon_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
         discover=True,
@@ -1433,12 +1535,12 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
 
     plan_items = []
     for task in pending:
-        command_preview = " ".join(build_command(task, resume=True))
+        action_preview = resume_action_description(task)
         plan_items.append(
             f"<li><strong>{h(task.get('retry_at') or '到期后立即')}</strong> "
             f"{h(PLATFORM_LABELS.get(task.get('platform'), task.get('platform')))} "
             f"<span class='muted'>{h(short_text(task.get('id'), limit=80))}</span>"
-            f"<br><code>{h(short_text(command_preview, limit=260))}</code></li>"
+            f"<br><code>{h(short_text(action_preview, limit=260))}</code></li>"
         )
     if not plan_items:
         plan_items.append("<li>当前没有自动恢复计划。原因：没有发现处于额度中断/等待恢复状态的任务。</li>")
@@ -1586,7 +1688,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
       <div class="card">
         <div class="label">自动恢复计划</div>
         <ul>{plan_html}</ul>
-        <p class="muted">确认方式：这里出现具体时间和命令后，后台 worker 会每 {args.interval} 秒检查一次；到点后自动执行对应命令。</p>
+        <p class="muted">确认方式：这里出现具体时间和动作后，后台 worker 会每 {args.interval} 秒检查一次；到点后自动执行对应恢复动作。</p>
       </div>
     </section>
 
