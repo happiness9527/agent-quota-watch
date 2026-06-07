@@ -22,6 +22,8 @@ class GuardianParsingTests(unittest.TestCase):
 
     def test_detects_quota_text(self):
         self.assertTrue(guardian.is_quota_text("Usage limit reached. Try again in 5 hours."))
+        self.assertTrue(guardian.is_quota_text("You've reached your 5-hour limit. It resets at 12:20 PM."))
+        self.assertTrue(guardian.is_quota_text("You’ve hit your limit for Claude messages."))
         self.assertTrue(guardian.is_quota_text("HTTP 429 rate limited"))
         self.assertTrue(guardian.is_quota_text("Quota exceeded. Please retry later."))
         self.assertFalse(guardian.is_quota_text("Unit tests failed with exit code 1"))
@@ -43,6 +45,14 @@ class GuardianParsingTests(unittest.TestCase):
         self.assertEqual(
             retry_at,
             datetime(2026, 6, 7, 2, 32, tzinfo=timezone.utc),
+        )
+
+    def test_infer_retry_at_from_midday_reset_wall_time(self):
+        now = datetime(2026, 6, 7, 9, 10, tzinfo=timezone.utc)
+        retry_at = guardian.infer_retry_at("Usage limit reached • Resets 12:20 PM", now=now)
+        self.assertEqual(
+            retry_at,
+            datetime(2026, 6, 7, 12, 22, tzinfo=timezone.utc),
         )
 
     def test_infer_retry_at_from_chinese_reset_wall_time(self):
@@ -95,6 +105,8 @@ class GuardianCommandTests(unittest.TestCase):
         command = guardian.build_command(task, resume=True)
         self.assertEqual(command[0], "osascript")
         self.assertIn("Keep working", " ".join(command))
+        self.assertIn("clickButtonByName", command[-1])
+        self.assertIn("findQuotaText", command[-1])
 
     def test_register_claude_app_limit_text_dry_run(self):
         task = guardian.register_claude_app_limit_text(

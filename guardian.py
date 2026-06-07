@@ -50,6 +50,8 @@ QUOTA_PATTERNS = [
         r"\bquota\s+(?:exceeded|reached|limit|limited|used up)\b",
         r"\b(?:exceeded|reached|hit)\s+(?:the\s+)?quota\b",
         r"\busage cap\b",
+        r"\b(?:you['’]?ve\s+)?(?:hit|reached)\s+your\s+(?:\d+\s*-\s*hour\s+)?limit\b",
+        r"\b\d+\s*-\s*hour\s+limit\b",
         r"\b(?:http\s*)?429\b.*\brate\b",
         r"try again in \d",
         r"retry after \d",
@@ -286,6 +288,114 @@ def wrapped_resume_prompt(task: dict[str, Any]) -> str:
     )
 
 
+CLAUDE_APP_SCRIPT_HELPERS = r'''
+on elementText(elementRef)
+  tell application "System Events"
+    set pieces to {}
+    try
+      set elementName to name of elementRef as text
+      if elementName is not "" then set end of pieces to elementName
+    end try
+    try
+      set elementValue to value of elementRef as text
+      if elementValue is not "" then set end of pieces to elementValue
+    end try
+    try
+      set elementDescription to description of elementRef as text
+      if elementDescription is not "" then set end of pieces to elementDescription
+    end try
+    return pieces as text
+  end tell
+end elementText
+
+on findQuotaText(elementRef)
+  tell application "System Events"
+    set currentText to my elementText(elementRef)
+    if currentText contains "Usage limit" or currentText contains "usage limit" or currentText contains "5-hour limit" or currentText contains "resets" or currentText contains "reset" then
+      return currentText
+    end if
+    try
+      set childElements to UI elements of elementRef
+    on error
+      set childElements to {}
+    end try
+    set childCount to count of childElements
+    repeat with childIndex from childCount to 1 by -1
+      set foundText to my findQuotaText(item childIndex of childElements)
+      if foundText is not "" then return foundText
+    end repeat
+  end tell
+  return ""
+end findQuotaText
+'''
+
+
+CLAUDE_APP_QUOTA_TEXT_SCRIPT = (
+    CLAUDE_APP_SCRIPT_HELPERS
+    + r'''
+tell application "Claude" to activate
+delay 0.5
+tell application "System Events" to tell process "Claude"
+  return my findQuotaText(front window)
+end tell
+'''
+)
+
+
+CLAUDE_APP_RESUME_SCRIPT = (
+    CLAUDE_APP_SCRIPT_HELPERS
+    + r'''
+
+on clickButtonByName(elementRef, targetName)
+  tell application "System Events"
+    try
+      set elementRole to role of elementRef as text
+    on error
+      set elementRole to ""
+    end try
+    try
+      set elementName to name of elementRef as text
+    on error
+      set elementName to ""
+    end try
+    if elementRole is "AXButton" and elementName contains targetName then
+      click elementRef
+      return true
+    end if
+    try
+      set childElements to UI elements of elementRef
+    on error
+      set childElements to {}
+    end try
+    set childCount to count of childElements
+    repeat with childIndex from childCount to 1 by -1
+      if my clickButtonByName(item childIndex of childElements, targetName) then return true
+    end repeat
+  end tell
+  return false
+end clickButtonByName
+
+tell application "Claude" to activate
+delay 0.7
+tell application "System Events" to tell process "Claude"
+  set clickedKeepWorking to my clickButtonByName(front window, "Keep working")
+  delay 1
+  set quotaText to my findQuotaText(front window)
+  if quotaText is not "" then
+    try
+      my clickButtonByName(front window, "Wait until")
+    end try
+    return quotaText
+  end if
+  if clickedKeepWorking then
+    return "clicked Keep working"
+  end if
+  error "Keep working button not found in Claude window"
+end tell
+'''
+)
+
+
 def build_command(task: dict[str, Any], *, resume: bool) -> list[str]:
     platform = task["platform"]
     session = task.get("session") or "last"
@@ -304,18 +414,7 @@ def build_command(task: dict[str, Any], *, resume: bool) -> list[str]:
         return ["codex", "exec", wrapped_start_prompt(task)]
 
     if platform == "claude-app":
-        return [
-            "osascript",
-            "-e",
-            'tell application "Claude" to activate',
-            "-e",
-            "delay 1",
-            "-e",
-            (
-                'tell application "System Events" to tell process "Claude" '
-                'to click (first button of front window whose name contains "Keep working")'
-            ),
-        ]
+        return ["osascript", "-e", CLAUDE_APP_RESUME_SCRIPT]
 
     raise ValueError(f"unsupported platform: {platform}")
 
@@ -851,17 +950,17 @@ def discover_codex_sessions(
 def read_claude_app_text() -> tuple[str, str | None]:
     if sys.platform != "darwin" or not shutil.which("osascript"):
         return "", "Claude App UI scanning is only supported on macOS with osascript."
-    script = (
-        'tell application "System Events" to tell process "Claude" '
-        "to get value of every static text of every window"
-    )
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", CLAUDE_APP_QUOTA_TEXT_SCRIPT],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        return "", "读取 Claude 桌面 App 窗口超时。请确认 Claude 窗口没有卡住，并保持窗口可见。"
     if result.returncode != 0:
         return "", result.stderr.strip() or result.stdout.strip()
     return result.stdout, None
@@ -1624,13 +1723,23 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
                         )
                         self.redirect_home()
                         return
-                    execute_task(
+                    result = execute_task(
                         task,
                         resume=True,
                         warn_after=parse_duration("4h30m"),
                         no_popup=True,
                     )
-                    worker_state["last_action"] = f"已执行立即恢复：{task_id}"
+                    if result.status == "rate_limited":
+                        worker_state["last_action"] = (
+                            f"任务仍受额度限制，已重新排队：{task_id}，"
+                            f"恢复时间 {result.retry_at or get_task(task_id).get('retry_at')}。"
+                        )
+                    elif result.status == "failed":
+                        worker_state["last_action"] = (
+                            f"立即恢复失败：{task_id}，请查看日志 {task.get('log_path')}。"
+                        )
+                    else:
+                        worker_state["last_action"] = f"已执行立即恢复：{task_id}，状态 {result.status}。"
                 else:
                     self.send_html("<h1>Bad Request</h1>", status=400)
                     return
