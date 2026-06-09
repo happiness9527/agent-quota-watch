@@ -27,7 +27,7 @@ http://127.0.0.1:8765
 页面会显示：
 
 - 当前有没有等待恢复的任务
-- Codex / Claude 桌面 App 的 5h 与周额度剩余
+- Codex / Claude 桌面 App 的 5h 与周额度剩余参考值
 - 每个任务来自 Codex、Claude Code 还是 Claude 桌面 App
 - 预计恢复时间
 - 最近扫描状态
@@ -53,6 +53,8 @@ Codex：
 - 默认在 Codex 使用量达到 90% 左右时就登记为“等待重置”，不必等到彻底中断。
 - 页面里会展示恢复时间和将要执行的 `codex exec resume ...` 命令。
 
+注意：Codex 额度卡片读取的是本机 `~/.codex/sessions` 里最近一次 `rate_limits` 快照，不是官方实时余额接口。如果它和 Codex App 左下角显示不一致，以 Codex App 为准。
+
 Claude 桌面 App：
 
 ```bash
@@ -70,6 +72,8 @@ brew install zstd
 ```bash
 python3 guardian.py dashboard --scan-ui --open --quota-warning-remaining 15
 ```
+
+注意：Claude 额度卡片同样是本机 cache 快照，可能和 Claude / Claude Code 当前界面显示不同步。页面会显示快照时间；如果和平台 UI 不一致，以平台 UI 为准。
 
 Claude 桌面 App 的 `Usage limit reached • Resets 2:30 AM • Keep working` 是窗口里的 UI 文字。macOS 默认不允许脚本读取其他 App 窗口，所以你需要打开权限：
 

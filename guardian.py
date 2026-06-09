@@ -40,6 +40,7 @@ DEFAULT_WARN_AFTER = timedelta(hours=4, minutes=30)
 DEFAULT_RESET_BUFFER = timedelta(minutes=2)
 DEFAULT_QUOTA_WARNING_REMAINING_PERCENT = 10.0
 DEFAULT_CODEX_NEAR_LIMIT_PERCENT = 100.0 - DEFAULT_QUOTA_WARNING_REMAINING_PERCENT
+QUOTA_SNAPSHOT_STALE_AFTER = timedelta(minutes=15)
 CLAUDE_DESKTOP_CACHE_DIR = (
     Path.home() / "Library" / "Application Support" / "Claude" / "Cache" / "Cache_Data"
 )
@@ -90,6 +91,7 @@ class QuotaStatus:
     remaining_percent: float | None
     resets_at: str | None
     source: str
+    observed_at: str | None = None
     stale: bool = False
     error: str | None = None
 
@@ -896,12 +898,17 @@ def quota_status(
     used_percent: Any,
     resets_at: Any,
     source: str,
+    observed_at: Any = None,
     stale: bool = False,
     error: str | None = None,
 ) -> QuotaStatus:
     used = percent_value(used_percent)
     remaining = None if used is None else max(0.0, 100.0 - used)
     reset_dt = datetime_from_value(resets_at)
+    observed_dt = datetime_from_value(observed_at)
+    stale = stale or (
+        observed_dt is not None and local_now() - observed_dt > QUOTA_SNAPSHOT_STALE_AFTER
+    )
     return QuotaStatus(
         platform=platform,
         label=label,
@@ -910,6 +917,7 @@ def quota_status(
         remaining_percent=remaining,
         resets_at=iso(reset_dt) if reset_dt else None,
         source=source,
+        observed_at=iso(observed_dt) if observed_dt else None,
         stale=stale,
         error=error,
     )
@@ -979,6 +987,8 @@ def read_claude_desktop_usage_cache(
     if plan.get("q5") is None and plan.get("q7") is None:
         return None, ["Claude Desktop /usage cache 未包含可用额度字段。"], False
 
+    observed_at = datetime.fromtimestamp(candidate[0], tz=local_now().tzinfo)
+    plan["observed_at"] = iso(observed_at)
     ensure_home()
     try:
         with CLAUDE_DESKTOP_QUOTA_CACHE.open("w", encoding="utf-8") as fh:
@@ -999,6 +1009,7 @@ def read_claude_desktop_usage_with_fallback() -> tuple[dict[str, Any] | None, li
         if local_now() - saved_at <= CLAUDE_DESKTOP_QUOTA_FALLBACK_TTL:
             fallback = cached.get("plan")
             if isinstance(fallback, dict):
+                fallback.setdefault("observed_at", cached.get("saved_at"))
                 return fallback, [*warnings, "Claude Desktop cache 本次未读到，暂用 30 分钟内的最后一次额度读数。"], True
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
@@ -1109,7 +1120,7 @@ def codex_session_id_from_path(path: Path) -> str:
     return match.group(1) if match else path.stem
 
 
-def latest_codex_rate_limits(days: int) -> tuple[dict[str, Any] | None, str | None]:
+def latest_codex_rate_limits(days: int) -> tuple[dict[str, Any] | None, str | None, str | None]:
     roots = [Path.home() / ".codex" / "sessions", Path.home() / ".codex" / "archived_sessions"]
     files: list[Path] = []
     for root in roots:
@@ -1143,17 +1154,17 @@ def latest_codex_rate_limits(days: int) -> tuple[dict[str, Any] | None, str | No
 
     latest = latest_codex or latest_any
     if latest is None:
-        return None, None
-    return latest[1], latest[2]
+        return None, None, None
+    return latest[1], latest[2], iso(latest[0])
 
 
 def codex_quota_statuses(days: int) -> list[QuotaStatus]:
-    rate_limits, source = latest_codex_rate_limits(days)
+    rate_limits, source, observed_at = latest_codex_rate_limits(days)
     if not rate_limits:
         return []
     primary = rate_limits.get("primary") or {}
     secondary = rate_limits.get("secondary") or {}
-    source_text = source or "Codex rollout rate_limits"
+    source_text = "Codex 本地日志 rate_limits"
     statuses: list[QuotaStatus] = []
     if primary:
         statuses.append(
@@ -1164,6 +1175,7 @@ def codex_quota_statuses(days: int) -> list[QuotaStatus]:
                 used_percent=primary.get("used_percent"),
                 resets_at=primary.get("resets_at"),
                 source=source_text,
+                observed_at=observed_at,
             )
         )
     if secondary:
@@ -1175,6 +1187,7 @@ def codex_quota_statuses(days: int) -> list[QuotaStatus]:
                 used_percent=secondary.get("used_percent"),
                 resets_at=secondary.get("resets_at"),
                 source=source_text,
+                observed_at=observed_at,
             )
         )
     return statuses
@@ -1291,6 +1304,7 @@ def claude_desktop_quota_statuses() -> tuple[list[QuotaStatus], list[str]]:
                 used_percent=plan.get("q5"),
                 resets_at=plan.get("q5_reset"),
                 source="Claude Desktop /usage cache",
+                observed_at=plan.get("observed_at"),
                 stale=stale,
             )
         )
@@ -1303,6 +1317,7 @@ def claude_desktop_quota_statuses() -> tuple[list[QuotaStatus], list[str]]:
                 used_percent=plan.get("q7"),
                 resets_at=plan.get("q7_reset"),
                 source="Claude Desktop /usage cache",
+                observed_at=plan.get("observed_at"),
                 stale=stale,
             )
         )
@@ -1333,6 +1348,8 @@ def discover_claude_app_quota_from_statuses(
 ) -> list[dict[str, Any]]:
     five_hour = next((status for status in statuses if status.window == "5h"), None)
     if not five_hour or five_hour.used_percent is None:
+        return []
+    if five_hour.stale:
         return []
     if five_hour.used_percent < reached_threshold:
         return []
@@ -1831,8 +1848,25 @@ def format_reset(value: str | None) -> str:
         return value
 
 
+def format_observed(value: str | None) -> str:
+    if not value:
+        return "快照时间未知"
+    try:
+        observed = parse_datetime(value).astimezone()
+    except ValueError:
+        return value
+    age_seconds = max(0, int((local_now() - observed).total_seconds()))
+    if age_seconds < 60:
+        age = "刚刚"
+    elif age_seconds < 3600:
+        age = f"{age_seconds // 60} 分钟前"
+    else:
+        age = f"{age_seconds // 3600} 小时前"
+    return f"{observed.strftime('%H:%M:%S')} · {age}"
+
+
 def quota_level(status: QuotaStatus, *, warning_remaining: float) -> str:
-    if status.error or status.remaining_percent is None:
+    if status.error or status.remaining_percent is None or status.stale:
         return "muted"
     if status.remaining_percent <= 0:
         return "danger"
@@ -1849,6 +1883,8 @@ def quota_level_label(status: QuotaStatus, *, warning_remaining: float) -> str:
         return "接近上限"
     if level == "ok":
         return "正常"
+    if status.stale:
+        return "快照过旧"
     return "未知"
 
 
@@ -1868,9 +1904,9 @@ def render_quota_cards_html(
               <div class="label">{h(status.label)}</div>
               <div class="value">{h(format_percent(status.remaining_percent))}</div>
               <div class="quota-meta">已用 {h(format_percent(status.used_percent))} · 重置 {h(format_reset(status.resets_at))}</div>
-              <div class="quota-meta">{h(quota_level_label(status, warning_remaining=warning_remaining))}{h(stale)}</div>
+              <div class="quota-meta">{h(quota_level_label(status, warning_remaining=warning_remaining))}{h(stale)} · {h(format_observed(status.observed_at))}</div>
               <div class="meter"><span style="width:{h(min(max(status.used_percent or 0.0, 0.0), 100.0))}%"></span></div>
-              <div class="quota-source">{h(short_text(status.source, limit=96))}</div>
+              <div class="quota-source">{h(short_text(status.source, limit=96))} · 本地参考值，以平台 UI 为准</div>
             </div>
             """
         )
@@ -2081,6 +2117,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     .quota-danger .value {{ color: var(--danger); }}
     .quota-meta {{ color: var(--muted); font-size: 13px; line-height: 1.45; margin-top: 6px; }}
     .quota-source {{ color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 8px; }}
+    .quota-disclaimer {{ margin: -8px 0 18px; font-size: 13px; }}
     .meter {{ height: 6px; background: #e7ecf2; border-radius: 999px; overflow: hidden; margin-top: 10px; }}
     .meter span {{ display: block; height: 100%; background: currentColor; }}
     .actions {{ display: flex; gap: 8px; flex-wrap: wrap; }}
@@ -2124,6 +2161,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     <section class="quota-grid">
       {quota_cards_html}
     </section>
+    <p class="muted quota-disclaimer">额度卡片来自本机可读快照：Codex 取本地 session 日志里的 rate_limits，Claude 取 Claude Desktop /usage cache；它不是官方实时余额接口。若与平台界面不一致，以平台界面为准。</p>
 
     <section class="toolbar">
       <form method="post" action="/action/discover"><button class="primary">立即扫描 Codex / Claude Code</button></form>

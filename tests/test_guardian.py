@@ -94,6 +94,19 @@ class GuardianParsingTests(unittest.TestCase):
             "warn",
         )
 
+    def test_quota_status_marks_old_snapshot_stale(self):
+        status = guardian.quota_status(
+            platform="codex",
+            label="Codex 5h",
+            window="5h",
+            used_percent=20,
+            resets_at=None,
+            source="test",
+            observed_at=guardian.iso(guardian.local_now() - timedelta(minutes=20)),
+        )
+        self.assertTrue(status.stale)
+        self.assertEqual(guardian.quota_level(status, warning_remaining=10.0), "muted")
+
 
 class GuardianCommandTests(unittest.TestCase):
     def make_task(self, platform="claude", session="last"):
@@ -205,6 +218,27 @@ class GuardianCommandTests(unittest.TestCase):
         self.assertEqual(tasks[0]["platform"], "claude-app")
         self.assertEqual(tasks[0]["status"], "scheduled")
         self.assertIn("5h 剩余约 9.0%", tasks[0]["prompt"])
+
+    def test_discover_claude_app_quota_ignores_stale_snapshot(self):
+        tasks = guardian.discover_claude_app_quota_from_statuses(
+            [
+                guardian.QuotaStatus(
+                    platform="claude-app",
+                    label="Claude 5h",
+                    window="5h",
+                    used_percent=99.0,
+                    remaining_percent=1.0,
+                    resets_at=guardian.iso(guardian.local_now() + timedelta(hours=1)),
+                    source="test",
+                    stale=True,
+                )
+            ],
+            auto_resume=True,
+            dry_run=True,
+            cwd=tempfile.gettempdir(),
+            reached_threshold=90.0,
+        )
+        self.assertEqual(tasks, [])
 
 
 class GuardianTaskStateTests(unittest.TestCase):
