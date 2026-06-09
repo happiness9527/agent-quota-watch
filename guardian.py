@@ -1801,6 +1801,143 @@ PLATFORM_LABELS = {
     "codex": "Codex",
 }
 
+STATUS_LABELS_EN = {
+    "created": "Created",
+    "scheduled": "Waiting for reset",
+    "running": "Running",
+    "resuming": "Resuming",
+    "rate_limited": "Quota interrupted",
+    "completed": "Completed",
+    "failed": "Failed",
+}
+
+PLATFORM_LABELS_EN = {
+    "claude": "Claude Code",
+    "claude-app": "Claude Desktop",
+    "codex": "Codex",
+}
+
+SUPPORTED_DASHBOARD_LANGS = {"zh", "en"}
+
+DASHBOARD_COPY = {
+    "zh": {
+        "html_lang": "zh-CN",
+        "subtitle": "本地额度快照监控与自动续跑面板：跟踪 Codex / Claude 任务，额度恢复后继续未完成工作。",
+        "guardian_status": "守护状态",
+        "running": "运行中",
+        "manual_mode": "手动模式",
+        "managed_tasks": "托管任务",
+        "pending_resume": "等待恢复",
+        "next_resume": "下一次恢复",
+        "quota_disclaimer": "额度卡片来自本机可读快照：Codex 取本地 session 日志里的 rate_limits，Claude 取 Claude Desktop /usage cache；它不是官方实时余额接口。若与平台界面不一致，以平台界面为准。",
+        "scan_codex_claude": "立即扫描 Codex / Claude Code",
+        "scan_claude_app": "扫描 Claude 桌面 App",
+        "resume_due": "恢复到期任务",
+        "refresh_page": "刷新页面",
+        "recent_scan": "最近扫描",
+        "scan_note": "Dashboard 每 {interval} 秒后台扫描一次；下一次后台扫描：{next_scan_at}。页面每 20 秒自动刷新。",
+        "claude_app_note": "Claude 桌面 App 说明",
+        "claude_ui_on": "已开启 Claude 桌面 App 监控。优先读取本地 /usage cache 获取剩余额度；窗口文字扫描作为兜底。",
+        "claude_ui_off": "默认只扫描 Claude Code/Codex 本地会话。要扫描 Claude 桌面 App，请用 dashboard --scan-ui 启动。",
+        "recent_action": "最近操作结果",
+        "auto_resume_plan": "自动恢复计划",
+        "confirm_note": "确认方式：这里出现具体时间和动作后，后台 worker 会每 {interval} 秒检查一次；到点后自动执行对应恢复动作。",
+        "manual_title": "Claude 桌面 App 兜底登记",
+        "manual_desc": "如果自动扫描读不到 Claude 窗口文字，把底部提示整句粘贴到这里，例如：Usage limit reached • Resets 2:30 AM • Keep working。",
+        "manual_placeholder": "粘贴 Claude 桌面 App 的额度提示文案",
+        "manual_button": "解析并登记自动恢复",
+        "status": "状态",
+        "platform": "平台",
+        "task": "任务",
+        "resume_time": "恢复时间",
+        "directory": "目录",
+        "action": "操作",
+        "empty_tasks": "暂无托管任务。保持页面打开，Agent Quota Watch 会继续扫描。",
+        "recommended_start": "推荐启动方式",
+        "start_note": "如果只监控 Codex / Claude Code 本地会话，也可以使用 <code>python3 quota_watch.py dashboard --open</code>。监控 Claude 桌面 App 前，先给 Terminal/Python 开辅助功能权限。",
+        "no_warnings": "暂无警告。",
+        "last_scan_default": "尚未扫描",
+        "last_action_default": "暂无操作。点击按钮后，这里会显示扫描、登记或恢复结果。",
+        "next_scan_default": "即将执行",
+        "restore_now": "立即恢复",
+        "auto_at_due": "到点自动恢复",
+        "manual_wait": "等待手动处理",
+        "in_progress": "执行中",
+        "no_resume_needed": "无需恢复",
+        "delete": "删除",
+        "plan_now": "到期后立即",
+        "no_plan": "当前没有自动恢复计划。原因：没有发现处于额度中断/等待恢复状态的任务。",
+        "quota_collect_hint": "额度采集提示",
+        "quota_status": "额度状态",
+        "quota_empty": "暂无 Codex / Claude 桌面 App 额度数据。保持页面运行，下一轮扫描会继续尝试。",
+        "used": "已用",
+        "reset": "重置",
+        "cached": " · 缓存值",
+        "source_note": "本地参考值，以平台 UI 为准",
+        "action_failed_title": "操作失败",
+        "back": "返回",
+        "lang_switch_label": "Language",
+    },
+    "en": {
+        "html_lang": "en",
+        "subtitle": "A local quota snapshot monitor and automatic resume dashboard for Codex, Claude Code, and Claude Desktop tasks.",
+        "guardian_status": "Guardian status",
+        "running": "Running",
+        "manual_mode": "Manual mode",
+        "managed_tasks": "Managed tasks",
+        "pending_resume": "Pending resumes",
+        "next_resume": "Next resume",
+        "quota_disclaimer": "Quota cards are local readable snapshots: Codex comes from local session rate_limits, and Claude comes from the Claude Desktop /usage cache. This is not an official real-time balance API. If it differs from the platform UI, trust the platform UI.",
+        "scan_codex_claude": "Scan Codex / Claude Code",
+        "scan_claude_app": "Scan Claude Desktop",
+        "resume_due": "Resume due tasks",
+        "refresh_page": "Refresh",
+        "recent_scan": "Recent scan",
+        "scan_note": "The dashboard scans in the background every {interval} seconds; next background scan: {next_scan_at}. This page refreshes every 20 seconds.",
+        "claude_app_note": "Claude Desktop notes",
+        "claude_ui_on": "Claude Desktop monitoring is enabled. Local /usage cache is preferred for quota snapshots; visible window text scanning is used as a fallback.",
+        "claude_ui_off": "By default only Claude Code and Codex local sessions are scanned. Start with dashboard --scan-ui to monitor Claude Desktop.",
+        "recent_action": "Recent action",
+        "auto_resume_plan": "Auto-resume plan",
+        "confirm_note": "How to verify: once this list shows a concrete time and action, the background worker checks every {interval} seconds and runs the matching resume action when due.",
+        "manual_title": "Claude Desktop fallback registration",
+        "manual_desc": "If automatic scanning cannot read Claude window text, paste the full bottom banner here, for example: Usage limit reached • Resets 2:30 AM • Keep working.",
+        "manual_placeholder": "Paste the Claude Desktop usage-limit banner",
+        "manual_button": "Parse and schedule resume",
+        "status": "Status",
+        "platform": "Platform",
+        "task": "Task",
+        "resume_time": "Resume time",
+        "directory": "Directory",
+        "action": "Action",
+        "empty_tasks": "No managed tasks yet. Keep this page open and Agent Quota Watch will continue scanning.",
+        "recommended_start": "Recommended start",
+        "start_note": "If you only need Codex / Claude Code local session monitoring, you can also run <code>python3 quota_watch.py dashboard --open</code>. Before monitoring Claude Desktop, grant Accessibility permission to Terminal/Python.",
+        "no_warnings": "No warnings.",
+        "last_scan_default": "Not scanned yet",
+        "last_action_default": "No action yet. After you click a button, scan, registration, or resume results will appear here.",
+        "next_scan_default": "Soon",
+        "restore_now": "Resume now",
+        "auto_at_due": "Auto-resume when due",
+        "manual_wait": "Waiting for manual handling",
+        "in_progress": "In progress",
+        "no_resume_needed": "No resume needed",
+        "delete": "Delete",
+        "plan_now": "Immediately when due",
+        "no_plan": "No auto-resume plan right now because no quota-interrupted or waiting task has been found.",
+        "quota_collect_hint": "Quota collection note",
+        "quota_status": "Quota status",
+        "quota_empty": "No Codex / Claude Desktop quota data yet. Keep the page running and the next scan will try again.",
+        "used": "Used",
+        "reset": "Reset",
+        "cached": " · cached",
+        "source_note": "local reference; trust the platform UI",
+        "action_failed_title": "Action failed",
+        "back": "Back",
+        "lang_switch_label": "Language",
+    },
+}
+
 
 def resume_time_reached(task: dict[str, Any]) -> bool:
     retry_at = task.get("retry_at")
@@ -1825,6 +1962,42 @@ def h(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 
+def dashboard_lang(value: Any = None) -> str:
+    text = str(value or "").lower()
+    return text if text in SUPPORTED_DASHBOARD_LANGS else "zh"
+
+
+def dashboard_copy(lang: str) -> dict[str, str]:
+    return DASHBOARD_COPY[dashboard_lang(lang)]
+
+
+def dashboard_status_label(status: Any, lang: str) -> str:
+    labels = STATUS_LABELS_EN if dashboard_lang(lang) == "en" else STATUS_LABELS
+    return labels.get(status, status or "-")
+
+
+def dashboard_platform_label(platform: Any, lang: str) -> str:
+    labels = PLATFORM_LABELS_EN if dashboard_lang(lang) == "en" else PLATFORM_LABELS
+    return labels.get(platform, platform or "-")
+
+
+def quota_display_label(status: QuotaStatus, lang: str) -> str:
+    if dashboard_lang(lang) != "en":
+        return status.label
+    platform = dashboard_platform_label(status.platform, lang)
+    if status.window == "week":
+        return f"{platform} weekly"
+    if status.window:
+        return f"{platform} {status.window}"
+    return status.label
+
+
+def dashboard_source_label(source: Any, lang: str) -> str:
+    if dashboard_lang(lang) == "en" and source == "Codex 本地日志 rate_limits":
+        return "Codex local session rate_limits"
+    return str(source or "")
+
+
 def short_text(value: Any, *, limit: int = 160) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -1832,11 +2005,21 @@ def short_text(value: Any, *, limit: int = 160) -> str:
     return text[: limit - 1] + "…"
 
 
-def resume_action_description(task: dict[str, Any]) -> str:
+def resume_action_description(task: dict[str, Any], *, lang: str = "zh") -> str:
     platform = task.get("platform")
     if platform == "claude-app":
+        if dashboard_lang(lang) == "en":
+            return (
+                "Refresh Claude Desktop, confirm the quota banner is gone, "
+                "then send a continuation prompt in the current chat."
+            )
         return "刷新 Claude 桌面 App，确认额度提示消失后，在当前对话自动发送继续任务提示。"
-    return " ".join(build_command(task, resume=True))
+    try:
+        return " ".join(build_command(task, resume=True))
+    except (KeyError, ValueError):
+        if dashboard_lang(lang) == "en":
+            return "Resume through the platform CLI using this task's session context."
+        return "使用平台 CLI 按该任务的会话上下文继续恢复。"
 
 
 def format_percent(value: float | None) -> str:
@@ -1854,20 +2037,30 @@ def format_reset(value: str | None) -> str:
         return value
 
 
-def format_observed(value: str | None) -> str:
+def format_observed(value: str | None, *, lang: str = "zh") -> str:
     if not value:
-        return "快照时间未知"
+        return "Snapshot time unknown" if dashboard_lang(lang) == "en" else "快照时间未知"
     try:
         observed = parse_datetime(value).astimezone()
     except ValueError:
         return value
     age_seconds = max(0, int((local_now() - observed).total_seconds()))
-    if age_seconds < 60:
-        age = "刚刚"
-    elif age_seconds < 3600:
-        age = f"{age_seconds // 60} 分钟前"
+    if dashboard_lang(lang) == "en":
+        if age_seconds < 60:
+            age = "just now"
+        elif age_seconds < 3600:
+            minutes = age_seconds // 60
+            age = f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        else:
+            hours = age_seconds // 3600
+            age = f"{hours} hour{'s' if hours != 1 else ''} ago"
     else:
-        age = f"{age_seconds // 3600} 小时前"
+        if age_seconds < 60:
+            age = "刚刚"
+        elif age_seconds < 3600:
+            age = f"{age_seconds // 60} 分钟前"
+        else:
+            age = f"{age_seconds // 3600} 小时前"
     return f"{observed.strftime('%H:%M:%S')} · {age}"
 
 
@@ -1881,8 +2074,18 @@ def quota_level(status: QuotaStatus, *, warning_remaining: float) -> str:
     return "ok"
 
 
-def quota_level_label(status: QuotaStatus, *, warning_remaining: float) -> str:
+def quota_level_label(status: QuotaStatus, *, warning_remaining: float, lang: str = "zh") -> str:
     level = quota_level(status, warning_remaining=warning_remaining)
+    if dashboard_lang(lang) == "en":
+        if level == "danger":
+            return "Depleted"
+        if level == "warn":
+            return "Near limit"
+        if level == "ok":
+            return "Normal"
+        if status.stale:
+            return "Snapshot is stale"
+        return "Unknown"
     if level == "danger":
         return "已用尽"
     if level == "warn":
@@ -1899,20 +2102,22 @@ def render_quota_cards_html(
     warnings: list[str],
     *,
     warning_remaining: float,
+    lang: str = "zh",
 ) -> str:
+    t = dashboard_copy(lang)
     cards: list[str] = []
     for status in statuses:
         level = quota_level(status, warning_remaining=warning_remaining)
-        stale = " · 缓存值" if status.stale else ""
+        stale = t["cached"] if status.stale else ""
         cards.append(
             f"""
             <div class="card quota-card quota-{h(level)}">
-              <div class="label">{h(status.label)}</div>
+              <div class="label">{h(quota_display_label(status, lang))}</div>
               <div class="value">{h(format_percent(status.remaining_percent))}</div>
-              <div class="quota-meta">已用 {h(format_percent(status.used_percent))} · 重置 {h(format_reset(status.resets_at))}</div>
-              <div class="quota-meta">{h(quota_level_label(status, warning_remaining=warning_remaining))}{h(stale)} · {h(format_observed(status.observed_at))}</div>
+              <div class="quota-meta">{h(t["used"])} {h(format_percent(status.used_percent))} · {h(t["reset"])} {h(format_reset(status.resets_at))}</div>
+              <div class="quota-meta">{h(quota_level_label(status, warning_remaining=warning_remaining, lang=lang))}{h(stale)} · {h(format_observed(status.observed_at, lang=lang))}</div>
               <div class="meter"><span style="width:{h(min(max(status.used_percent or 0.0, 0.0), 100.0))}%"></span></div>
-              <div class="quota-source">{h(short_text(status.source, limit=96))} · 本地参考值，以平台 UI 为准</div>
+              <div class="quota-source">{h(short_text(dashboard_source_label(status.source, lang), limit=96))} · {h(t["source_note"])}</div>
             </div>
             """
         )
@@ -1921,7 +2126,7 @@ def render_quota_cards_html(
         cards.append(
             f"""
             <div class="card quota-card quota-muted">
-              <div class="label">额度采集提示</div>
+              <div class="label">{h(t["quota_collect_hint"])}</div>
               <div class="value">-</div>
               <div class="quota-meta">{h(short_text(warning, limit=180))}</div>
             </div>
@@ -1930,11 +2135,11 @@ def render_quota_cards_html(
 
     if not cards:
         cards.append(
-            """
+            f"""
             <div class="card quota-card quota-muted">
-              <div class="label">额度状态</div>
+              <div class="label">{h(t["quota_status"])}</div>
               <div class="value">-</div>
-              <div class="quota-meta">暂无 Codex / Claude 桌面 App 额度数据。保持页面运行，下一轮扫描会继续尝试。</div>
+              <div class="quota-meta">{h(t["quota_empty"])}</div>
             </div>
             """
         )
@@ -1957,14 +2162,21 @@ def dashboard_daemon_args(args: argparse.Namespace) -> argparse.Namespace:
     )
 
 
-def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]) -> str:
+def render_dashboard_html(
+    args: argparse.Namespace,
+    worker_state: dict[str, Any],
+    *,
+    lang: str = "zh",
+) -> str:
+    lang = dashboard_lang(lang)
+    t = dashboard_copy(lang)
     tasks = load_tasks()
     pending = pending_tasks(tasks)
     next_task = next_retry_task(tasks)
     warnings = worker_state.get("warnings") or []
-    last_scan = worker_state.get("last_scan") or "尚未扫描"
-    last_action = worker_state.get("last_action") or "暂无操作。点击按钮后，这里会显示扫描、登记或恢复结果。"
-    next_scan_at = worker_state.get("next_scan_at") or "即将执行"
+    last_scan = worker_state.get("last_scan") or t["last_scan_default"]
+    last_action = worker_state.get("last_action") or t["last_action_default"]
+    next_scan_at = worker_state.get("next_scan_at") or t["next_scan_default"]
     worker_enabled = not args.no_worker
     quota_statuses, quota_warnings = collect_quota_statuses(
         days=args.days,
@@ -1974,33 +2186,38 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
         quota_statuses,
         quota_warnings,
         warning_remaining=args.quota_warning_remaining,
+        lang=lang,
     )
     claude_ui_note = (
-        "已开启 Claude 桌面 App 监控。优先读取本地 /usage cache 获取剩余额度；窗口文字扫描作为兜底。"
+        t["claude_ui_on"]
         if args.scan_ui
-        else "默认只扫描 Claude Code/Codex 本地会话。要扫描 Claude 桌面 App，请用 dashboard --scan-ui 启动。"
+        else t["claude_ui_off"]
     )
+    lang_input = f'<input type="hidden" name="lang" value="{h(lang)}">'
+    zh_active = " active" if lang == "zh" else ""
+    en_active = " active" if lang == "en" else ""
 
     rows = []
     for task in sorted(tasks, key=lambda item: item.get("updated_at") or "", reverse=True):
-        status = STATUS_LABELS.get(task.get("status"), task.get("status") or "-")
-        platform = PLATFORM_LABELS.get(task.get("platform"), task.get("platform") or "-")
+        status = dashboard_status_label(task.get("status"), lang)
+        platform = dashboard_platform_label(task.get("platform"), lang)
         retry_at = task.get("retry_at") or "-"
         prompt = short_text(task.get("prompt") or task.get("name") or task.get("id"))
         if can_resume_manually(task):
             action_html = (
                 f'<form method="post" action="/action/resume">'
+                f'{lang_input}'
                 f'<input type="hidden" name="id" value="{h(task.get("id"))}">'
-                f'<button>立即恢复</button></form>'
+                f'<button>{h(t["restore_now"])}</button></form>'
             )
         elif task.get("status") in {"rate_limited", "scheduled"} and task.get("auto_resume"):
-            action_html = '<span class="muted">到点自动恢复</span>'
+            action_html = f'<span class="muted">{h(t["auto_at_due"])}</span>'
         elif task.get("status") in {"rate_limited", "scheduled"}:
-            action_html = '<span class="muted">等待手动处理</span>'
+            action_html = f'<span class="muted">{h(t["manual_wait"])}</span>'
         elif task.get("status") in {"running", "resuming"}:
-            action_html = '<span class="muted">执行中</span>'
+            action_html = f'<span class="muted">{h(t["in_progress"])}</span>'
         else:
-            action_html = '<span class="muted">无需恢复</span>'
+            action_html = f'<span class="muted">{h(t["no_resume_needed"])}</span>'
         row = f"""
         <tr>
           <td><span class="pill status-{h(task.get('status'))}">{h(status)}</span></td>
@@ -2013,7 +2230,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
           <td>{h(task.get('cwd'))}</td>
           <td class="actions">
             {action_html}
-            <form method="post" action="/action/delete"><input type="hidden" name="id" value="{h(task.get('id'))}"><button class="danger">删除</button></form>
+            <form method="post" action="/action/delete">{lang_input}<input type="hidden" name="id" value="{h(task.get('id'))}"><button class="danger">{h(t["delete"])}</button></form>
           </td>
         </tr>
         """
@@ -2021,27 +2238,27 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
 
     warnings_html = "".join(f"<li>{h(warning)}</li>" for warning in warnings)
     if not warnings_html:
-        warnings_html = "<li>暂无警告。</li>"
+        warnings_html = f"<li>{h(t['no_warnings'])}</li>"
 
-    task_rows = "\n".join(rows) or """
-      <tr><td colspan="6" class="empty">暂无托管任务。保持页面打开，Agent Quota Watch 会继续扫描。</td></tr>
+    task_rows = "\n".join(rows) or f"""
+      <tr><td colspan="6" class="empty">{h(t["empty_tasks"])}</td></tr>
     """
 
     plan_items = []
     for task in pending:
-        action_preview = resume_action_description(task)
+        action_preview = resume_action_description(task, lang=lang)
         plan_items.append(
-            f"<li><strong>{h(task.get('retry_at') or '到期后立即')}</strong> "
-            f"{h(PLATFORM_LABELS.get(task.get('platform'), task.get('platform')))} "
+            f"<li><strong>{h(task.get('retry_at') or t['plan_now'])}</strong> "
+            f"{h(dashboard_platform_label(task.get('platform'), lang))} "
             f"<span class='muted'>{h(short_text(task.get('id'), limit=80))}</span>"
             f"<br><code>{h(short_text(action_preview, limit=260))}</code></li>"
         )
     if not plan_items:
-        plan_items.append("<li>当前没有自动恢复计划。原因：没有发现处于额度中断/等待恢复状态的任务。</li>")
+        plan_items.append(f"<li>{h(t['no_plan'])}</li>")
     plan_html = "".join(plan_items)
 
     return f"""<!doctype html>
-<html lang="zh-CN">
+<html lang="{h(t["html_lang"])}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2082,8 +2299,27 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
       border-bottom: 1px solid var(--border);
       background: var(--panel);
     }}
+    .header-row {{
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+    }}
     h1 {{ margin: 0 0 8px; font-size: 26px; letter-spacing: 0; }}
     p {{ margin: 0; color: var(--muted); line-height: 1.55; }}
+    .lang-switch {{ display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }}
+    .lang-switch a {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 9px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 13px;
+    }}
+    .lang-switch a.active {{ background: var(--accent); border-color: var(--accent); color: white; }}
     main {{ padding: 24px 32px 40px; max-width: 1400px; margin: 0 auto; }}
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }}
     .quota-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }}
@@ -2146,6 +2382,8 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     }}
     @media (max-width: 900px) {{
       header, main {{ padding-left: 16px; padding-right: 16px; }}
+      .header-row {{ display: block; }}
+      .lang-switch {{ margin-top: 14px; }}
       .grid, .quota-grid, .notice {{ grid-template-columns: 1fr; }}
       table {{ display: block; overflow-x: auto; }}
     }}
@@ -2153,37 +2391,45 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
 </head>
 <body>
   <header>
-    <h1>Agent Quota Watch</h1>
-    <p>本地额度快照监控与自动续跑面板：跟踪 Codex / Claude 任务，额度恢复后继续未完成工作。</p>
+    <div class="header-row">
+      <div>
+        <h1>Agent Quota Watch</h1>
+        <p>{h(t["subtitle"])}</p>
+      </div>
+      <nav class="lang-switch" aria-label="{h(t["lang_switch_label"])}">
+        <a class="{zh_active}" href="/?lang=zh">中文</a>
+        <a class="{en_active}" href="/?lang=en">English</a>
+      </nav>
+    </div>
   </header>
   <main>
     <section class="grid">
-      <div class="card"><div class="label">守护状态</div><div class="value">{'运行中' if worker_enabled else '手动模式'}</div></div>
-      <div class="card"><div class="label">托管任务</div><div class="value">{len(tasks)}</div></div>
-      <div class="card"><div class="label">等待恢复</div><div class="value">{len(pending)}</div></div>
-      <div class="card"><div class="label">下一次恢复</div><div class="value">{h(next_task.get('retry_at') if next_task else '-')}</div></div>
+      <div class="card"><div class="label">{h(t["guardian_status"])}</div><div class="value">{h(t["running"] if worker_enabled else t["manual_mode"])}</div></div>
+      <div class="card"><div class="label">{h(t["managed_tasks"])}</div><div class="value">{len(tasks)}</div></div>
+      <div class="card"><div class="label">{h(t["pending_resume"])}</div><div class="value">{len(pending)}</div></div>
+      <div class="card"><div class="label">{h(t["next_resume"])}</div><div class="value">{h(next_task.get('retry_at') if next_task else '-')}</div></div>
     </section>
 
     <section class="quota-grid">
       {quota_cards_html}
     </section>
-    <p class="muted quota-disclaimer">额度卡片来自本机可读快照：Codex 取本地 session 日志里的 rate_limits，Claude 取 Claude Desktop /usage cache；它不是官方实时余额接口。若与平台界面不一致，以平台界面为准。</p>
+    <p class="muted quota-disclaimer">{h(t["quota_disclaimer"])}</p>
 
     <section class="toolbar">
-      <form method="post" action="/action/discover"><button class="primary">立即扫描 Codex / Claude Code</button></form>
-      <form method="post" action="/action/discover-ui"><button>扫描 Claude 桌面 App</button></form>
-      <form method="post" action="/action/tick"><button>恢复到期任务</button></form>
-      <a class="button" href="/">刷新页面</a>
+      <form method="post" action="/action/discover">{lang_input}<button class="primary">{h(t["scan_codex_claude"])}</button></form>
+      <form method="post" action="/action/discover-ui">{lang_input}<button>{h(t["scan_claude_app"])}</button></form>
+      <form method="post" action="/action/tick">{lang_input}<button>{h(t["resume_due"])}</button></form>
+      <a class="button" href="/?lang={h(lang)}">{h(t["refresh_page"])}</a>
     </section>
 
     <section class="notice">
       <div class="card">
-        <div class="label">最近扫描</div>
+        <div class="label">{h(t["recent_scan"])}</div>
         <p>{h(last_scan)}</p>
-        <p class="muted">Dashboard 每 {args.interval} 秒后台扫描一次；下一次后台扫描：{h(next_scan_at)}。页面每 20 秒自动刷新。</p>
+        <p class="muted">{h(t["scan_note"].format(interval=args.interval, next_scan_at=next_scan_at))}</p>
       </div>
       <div class="card">
-        <div class="label">Claude 桌面 App 说明</div>
+        <div class="label">{h(t["claude_app_note"])}</div>
         <p>{h(claude_ui_note)}</p>
         <ul>{warnings_html}</ul>
       </div>
@@ -2191,36 +2437,37 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
 
     <section class="notice">
       <div class="card">
-        <div class="label">最近操作结果</div>
+        <div class="label">{h(t["recent_action"])}</div>
         <p>{h(last_action)}</p>
       </div>
       <div class="card">
-        <div class="label">自动恢复计划</div>
+        <div class="label">{h(t["auto_resume_plan"])}</div>
         <ul>{plan_html}</ul>
-        <p class="muted">确认方式：这里出现具体时间和动作后，后台 worker 会每 {args.interval} 秒检查一次；到点后自动执行对应恢复动作。</p>
+        <p class="muted">{h(t["confirm_note"].format(interval=args.interval))}</p>
       </div>
     </section>
 
     <section class="card" style="margin-bottom:18px">
-      <div class="label">Claude 桌面 App 兜底登记</div>
-      <p class="muted">如果自动扫描读不到 Claude 窗口文字，把底部提示整句粘贴到这里，例如：Usage limit reached • Resets 2:30 AM • Keep working。</p>
+      <div class="label">{h(t["manual_title"])}</div>
+      <p class="muted">{h(t["manual_desc"])}</p>
       <form method="post" action="/action/register-claude-app-text" class="manual-form">
-        <textarea name="limit_text" placeholder="粘贴 Claude 桌面 App 的额度提示文案"></textarea>
-        <button class="primary">解析并登记自动恢复</button>
+        {lang_input}
+        <textarea name="limit_text" placeholder="{h(t["manual_placeholder"])}"></textarea>
+        <button class="primary">{h(t["manual_button"])}</button>
       </form>
     </section>
 
     <table>
       <thead>
-        <tr><th>状态</th><th>平台</th><th>任务</th><th>恢复时间</th><th>目录</th><th>操作</th></tr>
+        <tr><th>{h(t["status"])}</th><th>{h(t["platform"])}</th><th>{h(t["task"])}</th><th>{h(t["resume_time"])}</th><th>{h(t["directory"])}</th><th>{h(t["action"])}</th></tr>
       </thead>
       <tbody>{task_rows}</tbody>
     </table>
 
     <section class="card" style="margin-top:18px">
-      <div class="label">推荐启动方式</div>
+      <div class="label">{h(t["recommended_start"])}</div>
       <p><code>python3 quota_watch.py dashboard --scan-ui --open --keep-awake</code></p>
-      <p class="muted">如果只监控 Codex / Claude Code 本地会话，也可以使用 <code>python3 quota_watch.py dashboard --open</code>。监控 Claude 桌面 App 前，先给 Terminal/Python 开辅助功能权限。</p>
+      <p class="muted">{t["start_note"]}</p>
     </section>
   </main>
 </body>
@@ -2233,10 +2480,11 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     stop_event = threading.Event()
     keep_awake_process: subprocess.Popen[str] | None = None
     worker_state: dict[str, Any] = {
-        "last_scan": "尚未扫描",
+        "last_scan": None,
         "warnings": [],
-        "last_action": "暂无操作。点击按钮后，这里会显示扫描、登记或恢复结果。",
-        "next_scan_at": "即将执行",
+        "last_action": None,
+        "next_scan_at": None,
+        "lang": "zh",
     }
 
     def run_tick(*, scan_ui_override: bool | None = None) -> dict[str, Any]:
@@ -2272,9 +2520,16 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             self.end_headers()
             self.wfile.write(encoded)
 
-        def redirect_home(self) -> None:
+        def request_lang(self, parsed: Any | None = None, form: dict[str, list[str]] | None = None) -> str:
+            query = parse_qs(parsed.query) if parsed is not None else {}
+            lang = (form or {}).get("lang") or query.get("lang") or [worker_state.get("lang") or "zh"]
+            selected = dashboard_lang(lang[0])
+            worker_state["lang"] = selected
+            return selected
+
+        def redirect_home(self, lang: str | None = None) -> None:
             self.send_response(303)
-            self.send_header("Location", "/")
+            self.send_header("Location", f"/?lang={dashboard_lang(lang or worker_state.get('lang'))}")
             self.end_headers()
 
         def do_GET(self) -> None:
@@ -2282,7 +2537,8 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             if parsed.path != "/":
                 self.send_html("<h1>Not Found</h1>", status=404)
                 return
-            self.send_html(render_dashboard_html(args, worker_state))
+            lang = self.request_lang(parsed)
+            self.send_html(render_dashboard_html(args, worker_state, lang=lang))
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
@@ -2290,29 +2546,50 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             body = self.rfile.read(length).decode("utf-8", errors="ignore")
             form = parse_qs(body)
             task_id = (form.get("id") or [""])[0]
+            lang = self.request_lang(parsed, form)
 
             try:
                 if parsed.path == "/action/discover":
                     summary = run_tick(scan_ui_override=False)
-                    worker_state["last_action"] = (
-                        f"Codex / Claude Code 扫描完成：新发现 {len(summary['discovered'])} 个，"
-                        f"恢复 {len(summary['resumed'])} 个，警告 {len(summary['warnings'])} 条。"
-                    )
+                    if lang == "en":
+                        worker_state["last_action"] = (
+                            f"Codex / Claude Code scan finished: {len(summary['discovered'])} discovered, "
+                            f"{len(summary['resumed'])} resumed, {len(summary['warnings'])} warnings."
+                        )
+                    else:
+                        worker_state["last_action"] = (
+                            f"Codex / Claude Code 扫描完成：新发现 {len(summary['discovered'])} 个，"
+                            f"恢复 {len(summary['resumed'])} 个，警告 {len(summary['warnings'])} 条。"
+                        )
                 elif parsed.path == "/action/discover-ui":
                     summary = run_tick(scan_ui_override=True)
-                    worker_state["last_action"] = (
-                        f"Claude 桌面 App 扫描完成：新发现 {len(summary['discovered'])} 个，"
-                        f"恢复 {len(summary['resumed'])} 个，警告 {len(summary['warnings'])} 条。"
-                    )
+                    if lang == "en":
+                        worker_state["last_action"] = (
+                            f"Claude Desktop scan finished: {len(summary['discovered'])} discovered, "
+                            f"{len(summary['resumed'])} resumed, {len(summary['warnings'])} warnings."
+                        )
+                    else:
+                        worker_state["last_action"] = (
+                            f"Claude 桌面 App 扫描完成：新发现 {len(summary['discovered'])} 个，"
+                            f"恢复 {len(summary['resumed'])} 个，警告 {len(summary['warnings'])} 条。"
+                        )
                 elif parsed.path == "/action/tick":
                     summary = run_tick()
-                    worker_state["last_action"] = (
-                        f"到期任务检查完成：恢复 {len(summary['resumed'])} 个，"
-                        f"当前等待恢复 {len(pending_tasks())} 个。"
-                    )
+                    if lang == "en":
+                        worker_state["last_action"] = (
+                            f"Due-task check finished: {len(summary['resumed'])} resumed, "
+                            f"{len(pending_tasks())} still pending."
+                        )
+                    else:
+                        worker_state["last_action"] = (
+                            f"到期任务检查完成：恢复 {len(summary['resumed'])} 个，"
+                            f"当前等待恢复 {len(pending_tasks())} 个。"
+                        )
                 elif parsed.path == "/action/delete" and task_id:
                     remove_task(task_id)
-                    worker_state["last_action"] = f"已删除任务：{task_id}"
+                    worker_state["last_action"] = (
+                        f"Deleted task: {task_id}" if lang == "en" else f"已删除任务：{task_id}"
+                    )
                 elif parsed.path == "/action/register-claude-app-text":
                     limit_text = (form.get("limit_text") or [""])[0]
                     task = register_claude_app_limit_text(
@@ -2321,18 +2598,30 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
                         auto_resume=True,
                         dry_run=False,
                     )
-                    worker_state["last_action"] = (
-                        f"已登记 Claude 桌面 App 自动恢复任务：{task['id']}，"
-                        f"恢复时间 {task.get('retry_at')}。"
-                    )
+                    if lang == "en":
+                        worker_state["last_action"] = (
+                            f"Registered Claude Desktop auto-resume task: {task['id']}; "
+                            f"resume time {task.get('retry_at')}."
+                        )
+                    else:
+                        worker_state["last_action"] = (
+                            f"已登记 Claude 桌面 App 自动恢复任务：{task['id']}，"
+                            f"恢复时间 {task.get('retry_at')}。"
+                        )
                 elif parsed.path == "/action/resume" and task_id:
                     task = get_task(task_id)
                     if not can_resume_manually(task):
-                        worker_state["last_action"] = (
-                            f"任务 {task_id} 当前状态是 "
-                            f"{STATUS_LABELS.get(task.get('status'), task.get('status'))}，无需恢复。"
-                        )
-                        self.redirect_home()
+                        if lang == "en":
+                            worker_state["last_action"] = (
+                                f"Task {task_id} is currently "
+                                f"{dashboard_status_label(task.get('status'), lang)}; no resume needed."
+                            )
+                        else:
+                            worker_state["last_action"] = (
+                                f"任务 {task_id} 当前状态是 "
+                                f"{dashboard_status_label(task.get('status'), lang)}，无需恢复。"
+                            )
+                        self.redirect_home(lang)
                         return
                     result = execute_task(
                         task,
@@ -2341,26 +2630,42 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
                         no_popup=True,
                     )
                     if result.status == "rate_limited":
-                        worker_state["last_action"] = (
-                            f"任务仍受额度限制，已重新排队：{task_id}，"
-                            f"恢复时间 {result.retry_at or get_task(task_id).get('retry_at')}。"
-                        )
+                        if lang == "en":
+                            worker_state["last_action"] = (
+                                f"Task is still quota-limited and was queued again: {task_id}; "
+                                f"resume time {result.retry_at or get_task(task_id).get('retry_at')}."
+                            )
+                        else:
+                            worker_state["last_action"] = (
+                                f"任务仍受额度限制，已重新排队：{task_id}，"
+                                f"恢复时间 {result.retry_at or get_task(task_id).get('retry_at')}。"
+                            )
                     elif result.status == "failed":
-                        worker_state["last_action"] = (
-                            f"立即恢复失败：{task_id}，请查看日志 {task.get('log_path')}。"
-                        )
+                        if lang == "en":
+                            worker_state["last_action"] = (
+                                f"Immediate resume failed: {task_id}. Check log {task.get('log_path')}."
+                            )
+                        else:
+                            worker_state["last_action"] = (
+                                f"立即恢复失败：{task_id}，请查看日志 {task.get('log_path')}。"
+                            )
                     else:
-                        worker_state["last_action"] = f"已执行立即恢复：{task_id}，状态 {result.status}。"
+                        worker_state["last_action"] = (
+                            f"Immediate resume executed: {task_id}; status {result.status}."
+                            if lang == "en"
+                            else f"已执行立即恢复：{task_id}，状态 {result.status}。"
+                        )
                 else:
                     self.send_html("<h1>Bad Request</h1>", status=400)
                     return
             except Exception as exc:  # noqa: BLE001 - local dashboard should surface errors.
+                t = dashboard_copy(lang)
                 self.send_html(
-                    f"<h1>操作失败</h1><p>{h(exc)}</p><p><a href='/'>返回</a></p>",
+                    f"<h1>{h(t['action_failed_title'])}</h1><p>{h(exc)}</p><p><a href='/?lang={h(lang)}'>{h(t['back'])}</a></p>",
                     status=500,
                 )
                 return
-            self.redirect_home()
+            self.redirect_home(lang)
 
     url = f"http://{args.host}:{args.port}"
     try:

@@ -108,6 +108,47 @@ class GuardianParsingTests(unittest.TestCase):
         self.assertEqual(guardian.quota_level(status, warning_remaining=10.0), "muted")
 
 
+class GuardianDashboardTests(unittest.TestCase):
+    def test_dashboard_language_helpers(self):
+        self.assertEqual(guardian.dashboard_lang("en"), "en")
+        self.assertEqual(guardian.dashboard_lang("zh"), "zh")
+        self.assertEqual(guardian.dashboard_lang("fr"), "zh")
+        self.assertEqual(guardian.dashboard_platform_label("claude-app", "en"), "Claude Desktop")
+        self.assertEqual(guardian.dashboard_status_label("scheduled", "en"), "Waiting for reset")
+        self.assertEqual(guardian.format_observed(None, lang="en"), "Snapshot time unknown")
+
+    def test_dashboard_quota_card_renders_english_copy(self):
+        status = guardian.QuotaStatus(
+            platform="claude-app",
+            label="Claude 5h",
+            window="5h",
+            used_percent=91.0,
+            remaining_percent=9.0,
+            resets_at="2026-06-09T02:30:00+08:00",
+            source="test",
+        )
+
+        html = guardian.render_quota_cards_html(
+            [status],
+            [],
+            warning_remaining=10.0,
+            lang="en",
+        )
+
+        self.assertIn("Claude Desktop 5h", html)
+        self.assertIn("Used 91.0%", html)
+        self.assertIn("Near limit", html)
+        self.assertIn("local reference", html)
+
+    def test_resume_action_description_handles_incomplete_task(self):
+        description = guardian.resume_action_description(
+            {"platform": "codex", "session": "last"},
+            lang="en",
+        )
+
+        self.assertIn("platform CLI", description)
+
+
 class GuardianCommandTests(unittest.TestCase):
     def make_task(self, platform="claude", session="last"):
         with tempfile.TemporaryDirectory() as tmp:
