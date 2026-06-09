@@ -38,7 +38,13 @@ LOG_DIR = DEFAULT_HOME / "logs"
 DEFAULT_RETRY_DELAY = timedelta(hours=5, minutes=10)
 DEFAULT_WARN_AFTER = timedelta(hours=4, minutes=30)
 DEFAULT_RESET_BUFFER = timedelta(minutes=2)
-DEFAULT_CODEX_NEAR_LIMIT_PERCENT = 85.0
+DEFAULT_QUOTA_WARNING_REMAINING_PERCENT = 10.0
+DEFAULT_CODEX_NEAR_LIMIT_PERCENT = 100.0 - DEFAULT_QUOTA_WARNING_REMAINING_PERCENT
+CLAUDE_DESKTOP_CACHE_DIR = (
+    Path.home() / "Library" / "Application Support" / "Claude" / "Cache" / "Cache_Data"
+)
+CLAUDE_DESKTOP_QUOTA_CACHE = DEFAULT_HOME / "claude-desktop-quota.json"
+CLAUDE_DESKTOP_QUOTA_FALLBACK_TTL = timedelta(minutes=30)
 
 QUOTA_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -73,6 +79,19 @@ class RunResult:
     exit_code: int | None
     quota_detected: bool
     retry_at: str | None = None
+
+
+@dataclass
+class QuotaStatus:
+    platform: str
+    label: str
+    window: str
+    used_percent: float | None
+    remaining_percent: float | None
+    resets_at: str | None
+    source: str
+    stale: bool = False
+    error: str | None = None
 
 
 def utc_now() -> datetime:
@@ -843,6 +862,149 @@ def datetime_from_epoch(value: Any) -> datetime | None:
     return datetime.fromtimestamp(number, tz=local_now().tzinfo)
 
 
+def datetime_from_value(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return parse_datetime(text)
+        except ValueError:
+            return datetime_from_epoch(text)
+    return datetime_from_epoch(value)
+
+
+def percent_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        percent = float(value)
+    except (TypeError, ValueError):
+        return None
+    if 0 < percent <= 1:
+        percent *= 100
+    return max(0.0, percent)
+
+
+def quota_status(
+    *,
+    platform: str,
+    label: str,
+    window: str,
+    used_percent: Any,
+    resets_at: Any,
+    source: str,
+    stale: bool = False,
+    error: str | None = None,
+) -> QuotaStatus:
+    used = percent_value(used_percent)
+    remaining = None if used is None else max(0.0, 100.0 - used)
+    reset_dt = datetime_from_value(resets_at)
+    return QuotaStatus(
+        platform=platform,
+        label=label,
+        window=window,
+        used_percent=used,
+        remaining_percent=remaining,
+        resets_at=iso(reset_dt) if reset_dt else None,
+        source=source,
+        stale=stale,
+        error=error,
+    )
+
+
+def parse_claude_desktop_usage_payload(payload: bytes | str) -> dict[str, Any]:
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8", errors="replace")
+    data = json.loads(payload)
+    five_hour = data.get("five_hour") or {}
+    seven_day = data.get("seven_day") or {}
+    return {
+        "q5": percent_value(five_hour.get("utilization")),
+        "q5_reset": iso(reset)
+        if (reset := datetime_from_value(five_hour.get("resets_at")))
+        else None,
+        "q7": percent_value(seven_day.get("utilization")),
+        "q7_reset": iso(reset)
+        if (reset := datetime_from_value(seven_day.get("resets_at")))
+        else None,
+    }
+
+
+def read_claude_desktop_usage_cache(
+    cache_dir: Path = CLAUDE_DESKTOP_CACHE_DIR,
+) -> tuple[dict[str, Any] | None, list[str], bool]:
+    warnings: list[str] = []
+    if sys.platform != "darwin":
+        return None, ["Claude Desktop cache 读取仅支持 macOS。"], False
+    if not cache_dir.exists():
+        return None, [f"没有找到 Claude Desktop cache 目录：{cache_dir}"], False
+    if not shutil.which("zstd"):
+        return None, ["没有找到 zstd，无法读取 Claude Desktop /usage 缓存。可执行 brew install zstd。"], False
+
+    candidate: tuple[float, bytes] | None = None
+    for path in cache_dir.glob("*_0"):
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if b"organizations/" not in data or b"/usage" not in data:
+            continue
+        magic_index = data.find(b"\x28\xb5\x2f\xfd")
+        if magic_index < 0:
+            continue
+        mtime = path.stat().st_mtime
+        if candidate is None or mtime > candidate[0]:
+            candidate = (mtime, data[magic_index:])
+
+    if candidate is None:
+        return None, ["Claude Desktop cache 中暂未找到 /usage 响应。"], False
+
+    result = subprocess.run(
+        ["zstd", "-dc"],
+        input=candidate[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    try:
+        plan = parse_claude_desktop_usage_payload(result.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", errors="ignore").strip()
+            return None, [f"Claude Desktop /usage cache 解压失败：{detail or result.returncode}"], False
+        return None, [f"Claude Desktop /usage cache 解析失败：{exc}"], False
+    if plan.get("q5") is None and plan.get("q7") is None:
+        return None, ["Claude Desktop /usage cache 未包含可用额度字段。"], False
+
+    ensure_home()
+    try:
+        with CLAUDE_DESKTOP_QUOTA_CACHE.open("w", encoding="utf-8") as fh:
+            json.dump({"saved_at": iso(local_now()), "plan": plan}, fh, ensure_ascii=False)
+    except OSError:
+        pass
+    return plan, warnings, False
+
+
+def read_claude_desktop_usage_with_fallback() -> tuple[dict[str, Any] | None, list[str], bool]:
+    plan, warnings, stale = read_claude_desktop_usage_cache()
+    if plan:
+        return plan, warnings, stale
+    try:
+        with CLAUDE_DESKTOP_QUOTA_CACHE.open("r", encoding="utf-8") as fh:
+            cached = json.load(fh)
+        saved_at = parse_datetime(cached.get("saved_at", ""))
+        if local_now() - saved_at <= CLAUDE_DESKTOP_QUOTA_FALLBACK_TTL:
+            fallback = cached.get("plan")
+            if isinstance(fallback, dict):
+                return fallback, [*warnings, "Claude Desktop cache 本次未读到，暂用 30 分钟内的最后一次额度读数。"], True
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return None, warnings, False
+
+
 def register_discovered_task(
     *,
     platform: str,
@@ -859,13 +1021,15 @@ def register_discovered_task(
     retry_at_text = iso(retry_at)
     existing = get_task_by_source_key(source_key)
     if existing:
+        existing_prompt = existing.get("prompt") or ""
+        should_refresh_prompt = existing_prompt.startswith("Auto-discovered")
         existing.update(
             {
                 "status": status,
                 "retry_at": retry_at_text,
                 "auto_resume": auto_resume,
                 "source": source,
-                "prompt": existing.get("prompt") or prompt,
+                "prompt": prompt if should_refresh_prompt or not existing_prompt else existing_prompt,
             }
         )
         existing["updated_at"] = iso(local_now())
@@ -945,6 +1109,77 @@ def codex_session_id_from_path(path: Path) -> str:
     return match.group(1) if match else path.stem
 
 
+def latest_codex_rate_limits(days: int) -> tuple[dict[str, Any] | None, str | None]:
+    roots = [Path.home() / ".codex" / "sessions", Path.home() / ".codex" / "archived_sessions"]
+    files: list[Path] = []
+    for root in roots:
+        files.extend(recent_files(root, "**/rollout-*.jsonl", days=days, max_files=80))
+
+    latest_codex: tuple[datetime, dict[str, Any], str] | None = None
+    latest_any: tuple[datetime, dict[str, Any], str] | None = None
+    for path in files:
+        for raw in read_tail_text(path, max_bytes=512_000).splitlines():
+            if "rate_limits" not in raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            payload = obj.get("payload") or {}
+            rate_limits = payload.get("rate_limits") if isinstance(payload, dict) else None
+            if not isinstance(rate_limits, dict):
+                continue
+            timestamp = datetime_from_value(obj.get("timestamp")) or datetime.fromtimestamp(
+                path.stat().st_mtime,
+                tz=local_now().tzinfo,
+            )
+            item = (timestamp, rate_limits, str(path))
+            if latest_any is None or timestamp > latest_any[0]:
+                latest_any = item
+            if rate_limits.get("limit_id") == "codex" and (
+                latest_codex is None or timestamp > latest_codex[0]
+            ):
+                latest_codex = item
+
+    latest = latest_codex or latest_any
+    if latest is None:
+        return None, None
+    return latest[1], latest[2]
+
+
+def codex_quota_statuses(days: int) -> list[QuotaStatus]:
+    rate_limits, source = latest_codex_rate_limits(days)
+    if not rate_limits:
+        return []
+    primary = rate_limits.get("primary") or {}
+    secondary = rate_limits.get("secondary") or {}
+    source_text = source or "Codex rollout rate_limits"
+    statuses: list[QuotaStatus] = []
+    if primary:
+        statuses.append(
+            quota_status(
+                platform="codex",
+                label="Codex 5h",
+                window="5h",
+                used_percent=primary.get("used_percent"),
+                resets_at=primary.get("resets_at"),
+                source=source_text,
+            )
+        )
+    if secondary:
+        statuses.append(
+            quota_status(
+                platform="codex",
+                label="Codex 周",
+                window="week",
+                used_percent=secondary.get("used_percent"),
+                resets_at=secondary.get("resets_at"),
+                source=source_text,
+            )
+        )
+    return statuses
+
+
 def discover_codex_sessions(
     *,
     days: int,
@@ -1011,7 +1246,7 @@ def discover_codex_sessions(
                     reached = True
                 if used_float >= 100.0:
                     reached_limit = True
-                reset = datetime_from_epoch(bucket.get("resets_at"))
+                reset = datetime_from_value(bucket.get("resets_at"))
                 if reset and reset > local_now():
                     reset = reset + DEFAULT_RESET_BUFFER
                     if latest_retry_at is None or reset < latest_retry_at:
@@ -1040,6 +1275,112 @@ def discover_codex_sessions(
             )
         )
     return discovered
+
+
+def claude_desktop_quota_statuses() -> tuple[list[QuotaStatus], list[str]]:
+    plan, warnings, stale = read_claude_desktop_usage_with_fallback()
+    if not plan:
+        return [], warnings
+    statuses: list[QuotaStatus] = []
+    if plan.get("q5") is not None or plan.get("q5_reset"):
+        statuses.append(
+            quota_status(
+                platform="claude-app",
+                label="Claude 5h",
+                window="5h",
+                used_percent=plan.get("q5"),
+                resets_at=plan.get("q5_reset"),
+                source="Claude Desktop /usage cache",
+                stale=stale,
+            )
+        )
+    if plan.get("q7") is not None or plan.get("q7_reset"):
+        statuses.append(
+            quota_status(
+                platform="claude-app",
+                label="Claude 周",
+                window="week",
+                used_percent=plan.get("q7"),
+                resets_at=plan.get("q7_reset"),
+                source="Claude Desktop /usage cache",
+                stale=stale,
+            )
+        )
+    return statuses, warnings
+
+
+def collect_quota_statuses(
+    *,
+    days: int,
+    include_claude_app: bool,
+) -> tuple[list[QuotaStatus], list[str]]:
+    statuses = codex_quota_statuses(days)
+    warnings: list[str] = []
+    if include_claude_app:
+        claude_statuses, claude_warnings = claude_desktop_quota_statuses()
+        statuses.extend(claude_statuses)
+        warnings.extend(claude_warnings)
+    return statuses, warnings
+
+
+def discover_claude_app_quota_from_statuses(
+    statuses: list[QuotaStatus],
+    *,
+    auto_resume: bool,
+    dry_run: bool,
+    cwd: str,
+    reached_threshold: float,
+) -> list[dict[str, Any]]:
+    five_hour = next((status for status in statuses if status.window == "5h"), None)
+    if not five_hour or five_hour.used_percent is None:
+        return []
+    if five_hour.used_percent < reached_threshold:
+        return []
+
+    retry_at = (
+        parse_datetime(five_hour.resets_at) + DEFAULT_RESET_BUFFER
+        if five_hour.resets_at
+        else local_now() + DEFAULT_RETRY_DELAY
+    )
+    status = "rate_limited" if five_hour.used_percent >= 100.0 else "scheduled"
+    remaining = five_hour.remaining_percent if five_hour.remaining_percent is not None else 0.0
+    prompt = (
+        "Auto-discovered Claude App usage-limit task. "
+        f"Claude Desktop 5h 剩余约 {remaining:.1f}%，到重置后自动发送继续任务提示。"
+    )
+    task = register_discovered_task(
+        platform="claude-app",
+        cwd=cwd,
+        session="ui",
+        prompt=prompt,
+        retry_at=retry_at,
+        source_key="claude-app:front-window",
+        source="Claude Desktop /usage cache",
+        auto_resume=auto_resume,
+        dry_run=dry_run,
+        status=status,
+    )
+    return [task]
+
+
+def discover_claude_app_quota(
+    *,
+    auto_resume: bool,
+    dry_run: bool,
+    cwd: str,
+    reached_threshold: float,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    statuses, warnings = claude_desktop_quota_statuses()
+    return (
+        discover_claude_app_quota_from_statuses(
+            statuses,
+            auto_resume=auto_resume,
+            dry_run=dry_run,
+            cwd=cwd,
+            reached_threshold=reached_threshold,
+        ),
+        warnings,
+    )
 
 
 def read_claude_app_text() -> tuple[str, str | None]:
@@ -1145,14 +1486,32 @@ def run_discovery(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[
             )
         )
     if args.scan_ui:
-        ui_tasks, error = discover_claude_app_ui(
+        quota_statuses, quota_warnings = claude_desktop_quota_statuses()
+        quota_tasks = discover_claude_app_quota_from_statuses(
+            quota_statuses,
             auto_resume=auto_resume_bool,
             dry_run=args.dry_run,
             cwd=args.cwd,
+            reached_threshold=100.0 - args.quota_warning_remaining,
         )
-        discovered.extend(ui_tasks)
-        if error:
-            warnings.append(error)
+        discovered.extend(quota_tasks)
+        warnings.extend(quota_warnings)
+        has_cache_quota = any(
+            status.platform == "claude-app"
+            and status.window == "5h"
+            and status.used_percent is not None
+            and not status.stale
+            for status in quota_statuses
+        )
+        if not has_cache_quota:
+            ui_tasks, error = discover_claude_app_ui(
+                auto_resume=auto_resume_bool,
+                dry_run=args.dry_run,
+                cwd=args.cwd,
+            )
+            discovered.extend(ui_tasks)
+            if error:
+                warnings.append(error)
     return discovered, warnings
 
 
@@ -1457,6 +1816,89 @@ def resume_action_description(task: dict[str, Any]) -> str:
     return " ".join(build_command(task, resume=True))
 
 
+def format_percent(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:.1f}%"
+
+
+def format_reset(value: str | None) -> str:
+    if not value:
+        return "-"
+    try:
+        return parse_datetime(value).astimezone().strftime("%m-%d %H:%M")
+    except ValueError:
+        return value
+
+
+def quota_level(status: QuotaStatus, *, warning_remaining: float) -> str:
+    if status.error or status.remaining_percent is None:
+        return "muted"
+    if status.remaining_percent <= 0:
+        return "danger"
+    if status.remaining_percent <= warning_remaining:
+        return "warn"
+    return "ok"
+
+
+def quota_level_label(status: QuotaStatus, *, warning_remaining: float) -> str:
+    level = quota_level(status, warning_remaining=warning_remaining)
+    if level == "danger":
+        return "已用尽"
+    if level == "warn":
+        return "接近上限"
+    if level == "ok":
+        return "正常"
+    return "未知"
+
+
+def render_quota_cards_html(
+    statuses: list[QuotaStatus],
+    warnings: list[str],
+    *,
+    warning_remaining: float,
+) -> str:
+    cards: list[str] = []
+    for status in statuses:
+        level = quota_level(status, warning_remaining=warning_remaining)
+        stale = " · 缓存值" if status.stale else ""
+        cards.append(
+            f"""
+            <div class="card quota-card quota-{h(level)}">
+              <div class="label">{h(status.label)}</div>
+              <div class="value">{h(format_percent(status.remaining_percent))}</div>
+              <div class="quota-meta">已用 {h(format_percent(status.used_percent))} · 重置 {h(format_reset(status.resets_at))}</div>
+              <div class="quota-meta">{h(quota_level_label(status, warning_remaining=warning_remaining))}{h(stale)}</div>
+              <div class="meter"><span style="width:{h(min(max(status.used_percent or 0.0, 0.0), 100.0))}%"></span></div>
+              <div class="quota-source">{h(short_text(status.source, limit=96))}</div>
+            </div>
+            """
+        )
+
+    for warning in warnings[:2]:
+        cards.append(
+            f"""
+            <div class="card quota-card quota-muted">
+              <div class="label">额度采集提示</div>
+              <div class="value">-</div>
+              <div class="quota-meta">{h(short_text(warning, limit=180))}</div>
+            </div>
+            """
+        )
+
+    if not cards:
+        cards.append(
+            """
+            <div class="card quota-card quota-muted">
+              <div class="label">额度状态</div>
+              <div class="value">-</div>
+              <div class="quota-meta">暂无 Codex / Claude 桌面 App 额度数据。保持页面运行，下一轮扫描会继续尝试。</div>
+            </div>
+            """
+        )
+    return "\n".join(cards)
+
+
 def dashboard_daemon_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
         discover=True,
@@ -1465,6 +1907,7 @@ def dashboard_daemon_args(args: argparse.Namespace) -> argparse.Namespace:
         cwd=args.cwd,
         auto_resume="yes",
         codex_reached_threshold=args.codex_reached_threshold,
+        quota_warning_remaining=args.quota_warning_remaining,
         scan_ui=args.scan_ui,
         dry_run=False,
         warn_after="4h30m",
@@ -1481,8 +1924,17 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     last_action = worker_state.get("last_action") or "暂无操作。点击按钮后，这里会显示扫描、登记或恢复结果。"
     next_scan_at = worker_state.get("next_scan_at") or "即将执行"
     worker_enabled = not args.no_worker
+    quota_statuses, quota_warnings = collect_quota_statuses(
+        days=args.days,
+        include_claude_app=args.scan_ui,
+    )
+    quota_cards_html = render_quota_cards_html(
+        quota_statuses,
+        quota_warnings,
+        warning_remaining=args.quota_warning_remaining,
+    )
     claude_ui_note = (
-        "已开启 Claude 桌面 App 窗口扫描。若提示权限错误，请在 macOS 设置里给 Terminal 或 Python 开启辅助功能权限。"
+        "已开启 Claude 桌面 App 监控。优先读取本地 /usage cache 获取剩余额度；窗口文字扫描作为兜底。"
         if args.scan_ui
         else "默认只扫描 Claude Code/Codex 本地会话。要扫描 Claude 桌面 App，请用 dashboard --scan-ui 启动。"
     )
@@ -1592,6 +2044,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     p {{ margin: 0; color: var(--muted); line-height: 1.55; }}
     main {{ padding: 24px 32px 40px; max-width: 1400px; margin: 0 auto; }}
     .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }}
+    .quota-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }}
     .card {{
       background: var(--panel);
       border: 1px solid var(--border);
@@ -1622,6 +2075,14 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     .status-completed {{ color: var(--ok); }}
     .status-rate_limited, .status-scheduled {{ color: var(--warn); }}
     .status-failed {{ color: var(--danger); }}
+    .quota-card {{ min-height: 150px; }}
+    .quota-ok .value {{ color: var(--ok); }}
+    .quota-warn .value {{ color: var(--warn); }}
+    .quota-danger .value {{ color: var(--danger); }}
+    .quota-meta {{ color: var(--muted); font-size: 13px; line-height: 1.45; margin-top: 6px; }}
+    .quota-source {{ color: var(--muted); font-size: 12px; line-height: 1.35; margin-top: 8px; }}
+    .meter {{ height: 6px; background: #e7ecf2; border-radius: 999px; overflow: hidden; margin-top: 10px; }}
+    .meter span {{ display: block; height: 100%; background: currentColor; }}
     .actions {{ display: flex; gap: 8px; flex-wrap: wrap; }}
     .actions form {{ margin: 0; }}
     .empty {{ text-align: center; color: var(--muted); padding: 28px; }}
@@ -1642,7 +2103,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
     }}
     @media (max-width: 900px) {{
       header, main {{ padding-left: 16px; padding-right: 16px; }}
-      .grid, .notice {{ grid-template-columns: 1fr; }}
+      .grid, .quota-grid, .notice {{ grid-template-columns: 1fr; }}
       table {{ display: block; overflow-x: auto; }}
     }}
   </style>
@@ -1658,6 +2119,10 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
       <div class="card"><div class="label">托管任务</div><div class="value">{len(tasks)}</div></div>
       <div class="card"><div class="label">等待恢复</div><div class="value">{len(pending)}</div></div>
       <div class="card"><div class="label">下一次恢复</div><div class="value">{h(next_task.get('retry_at') if next_task else '-')}</div></div>
+    </section>
+
+    <section class="quota-grid">
+      {quota_cards_html}
     </section>
 
     <section class="toolbar">
@@ -1938,6 +2403,12 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--cwd", default=os.getcwd())
     discover.add_argument("--auto-resume", choices=["ask", "yes", "no"], default="yes")
     discover.add_argument("--codex-reached-threshold", type=float, default=DEFAULT_CODEX_NEAR_LIMIT_PERCENT)
+    discover.add_argument(
+        "--quota-warning-remaining",
+        type=float,
+        default=DEFAULT_QUOTA_WARNING_REMAINING_PERCENT,
+        help="register Claude App auto-resume when remaining 5h quota is at or below this percent",
+    )
     discover.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
     discover.add_argument("--dry-run", action="store_true")
     discover.add_argument("--json", action="store_true")
@@ -1979,6 +2450,12 @@ def build_parser() -> argparse.ArgumentParser:
     daemon.add_argument("--cwd", default=os.getcwd())
     daemon.add_argument("--auto-resume", choices=["ask", "yes", "no"], default="yes")
     daemon.add_argument("--codex-reached-threshold", type=float, default=DEFAULT_CODEX_NEAR_LIMIT_PERCENT)
+    daemon.add_argument(
+        "--quota-warning-remaining",
+        type=float,
+        default=DEFAULT_QUOTA_WARNING_REMAINING_PERCENT,
+        help="register Claude App auto-resume when remaining 5h quota is at or below this percent",
+    )
     daemon.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
     daemon.add_argument("--dry-run", action="store_true")
     daemon.add_argument("--no-discover", dest="discover", action="store_false")
@@ -1993,6 +2470,12 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--days", type=int, default=2)
     dashboard.add_argument("--cwd", default=os.getcwd())
     dashboard.add_argument("--codex-reached-threshold", type=float, default=DEFAULT_CODEX_NEAR_LIMIT_PERCENT)
+    dashboard.add_argument(
+        "--quota-warning-remaining",
+        type=float,
+        default=DEFAULT_QUOTA_WARNING_REMAINING_PERCENT,
+        help="show low-quota warning when remaining quota is at or below this percent",
+    )
     dashboard.add_argument("--scan-ui", action="store_true", help="also scan Claude App window text")
     dashboard.add_argument("--no-worker", action="store_true", help="serve the page without background scanning")
     dashboard.add_argument("--keep-awake", action="store_true", help="keep macOS awake while dashboard is running")

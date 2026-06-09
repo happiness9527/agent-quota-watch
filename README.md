@@ -2,7 +2,7 @@
 
 这是一个本地守护工具，用来监测 Codex 和 Claude 的额度中断任务，并在额度恢复后自动继续。
 
-它不会读取账号密码、token、私钥，也不会修改平台认证文件。它只读取本机已有的会话日志和窗口文字，发现类似 `Usage limit reached`、`Resets 2:30 AM`、`rate limited` 的提示后，登记恢复时间。
+它不会读取账号密码、token、私钥，也不会修改平台认证文件。它只读取本机已有的会话日志、Claude Desktop 本地 `/usage` 缓存和窗口文字，发现类似 `Usage limit reached`、`Resets 2:30 AM`、`rate limited` 的提示后，登记恢复时间。
 
 ## 推荐用法：可视化页面
 
@@ -27,6 +27,7 @@ http://127.0.0.1:8765
 页面会显示：
 
 - 当前有没有等待恢复的任务
+- Codex / Claude 桌面 App 的 5h 与周额度剩余
 - 每个任务来自 Codex、Claude Code 还是 Claude 桌面 App
 - 预计恢复时间
 - 最近扫描状态
@@ -49,13 +50,25 @@ Codex：
 - 直接用 `python3 guardian.py dashboard --scan-ui --open` 即可。
 - 工具会扫描 `~/.codex/sessions` 里的本地会话记录。
 - 如果 Codex 日志里有 `rate_limits.resets_at`，会自动读取真实恢复时间。
-- 默认在 Codex 使用量达到 85% 左右时就登记为“等待重置”，不必等到彻底中断。
+- 默认在 Codex 使用量达到 90% 左右时就登记为“等待重置”，不必等到彻底中断。
 - 页面里会展示恢复时间和将要执行的 `codex exec resume ...` 命令。
 
 Claude 桌面 App：
 
 ```bash
 python3 guardian.py dashboard --scan-ui --open
+```
+
+Guardian 会优先读取 Claude Desktop 本地 Chromium cache 里的 `/usage` 响应，用来显示 5 小时额度、周额度和重置时间。这部分不需要联网，但需要本机有 `zstd`：
+
+```bash
+brew install zstd
+```
+
+如果 Claude 5 小时额度剩余低于默认 `10%`，Guardian 会提前登记“等待重置”，到恢复时间后自动发送继续任务提示。你可以调整阈值：
+
+```bash
+python3 guardian.py dashboard --scan-ui --open --quota-warning-remaining 15
 ```
 
 Claude 桌面 App 的 `Usage limit reached • Resets 2:30 AM • Keep working` 是窗口里的 UI 文字。macOS 默认不允许脚本读取其他 App 窗口，所以你需要打开权限：

@@ -63,6 +63,37 @@ class GuardianParsingTests(unittest.TestCase):
             datetime(2026, 6, 7, 2, 32, tzinfo=timezone.utc),
         )
 
+    def test_parse_claude_desktop_usage_payload(self):
+        payload = """
+        {
+          "five_hour": {"utilization": 0.91, "resets_at": "2026-06-09T02:30:00+08:00"},
+          "seven_day": {"utilization": 42.5, "resets_at": "2026-06-12T09:00:00+08:00"}
+        }
+        """
+        plan = guardian.parse_claude_desktop_usage_payload(payload)
+        self.assertEqual(plan["q5"], 91.0)
+        self.assertEqual(plan["q7"], 42.5)
+        self.assertEqual(
+            guardian.parse_datetime(plan["q5_reset"]),
+            datetime(2026, 6, 9, 2, 30, tzinfo=timezone(timedelta(hours=8))),
+        )
+
+    def test_quota_status_remaining_percent(self):
+        status = guardian.quota_status(
+            platform="claude-app",
+            label="Claude 5h",
+            window="5h",
+            used_percent=0.9,
+            resets_at="2026-06-09T02:30:00+08:00",
+            source="test",
+        )
+        self.assertEqual(status.used_percent, 90.0)
+        self.assertEqual(status.remaining_percent, 10.0)
+        self.assertEqual(
+            guardian.quota_level(status, warning_remaining=10.0),
+            "warn",
+        )
+
 
 class GuardianCommandTests(unittest.TestCase):
     def make_task(self, platform="claude", session="last"):
@@ -143,6 +174,38 @@ class GuardianCommandTests(unittest.TestCase):
         self.assertEqual(task["platform"], "codex")
         self.assertEqual(task["status"], "scheduled")
 
+    def test_discover_claude_app_quota_dry_run(self):
+        original = guardian.claude_desktop_quota_statuses
+        reset_at = datetime(2026, 6, 9, 2, 30, tzinfo=timezone(timedelta(hours=8)))
+        try:
+            guardian.claude_desktop_quota_statuses = lambda: (
+                [
+                    guardian.QuotaStatus(
+                        platform="claude-app",
+                        label="Claude 5h",
+                        window="5h",
+                        used_percent=91.0,
+                        remaining_percent=9.0,
+                        resets_at=guardian.iso(reset_at),
+                        source="test",
+                    )
+                ],
+                [],
+            )
+            tasks, warnings = guardian.discover_claude_app_quota(
+                auto_resume=True,
+                dry_run=True,
+                cwd=tempfile.gettempdir(),
+                reached_threshold=90.0,
+            )
+        finally:
+            guardian.claude_desktop_quota_statuses = original
+        self.assertFalse(warnings)
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["platform"], "claude-app")
+        self.assertEqual(tasks[0]["status"], "scheduled")
+        self.assertIn("5h 剩余约 9.0%", tasks[0]["prompt"])
+
 
 class GuardianTaskStateTests(unittest.TestCase):
     def test_due_for_resume_requires_auto_resume(self):
@@ -211,13 +274,23 @@ class GuardianCliTests(unittest.TestCase):
 
     def test_dashboard_command_parses(self):
         args = guardian.build_parser().parse_args(
-            ["dashboard", "--scan-ui", "--open", "--keep-awake", "--interval", "15"]
+            [
+                "dashboard",
+                "--scan-ui",
+                "--open",
+                "--keep-awake",
+                "--interval",
+                "15",
+                "--quota-warning-remaining",
+                "12",
+            ]
         )
         self.assertEqual(args.command, "dashboard")
         self.assertTrue(args.scan_ui)
         self.assertTrue(args.open)
         self.assertTrue(args.keep_awake)
         self.assertEqual(args.interval, 15)
+        self.assertEqual(args.quota_warning_remaining, 12)
 
     def test_dashboard_port_in_use_returns_success(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), type("Handler", (object,), {}))
