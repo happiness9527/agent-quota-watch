@@ -1,4 +1,13 @@
+.DS_Store
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 .agent-continuity/
+.agent-quota-watch/
+
+*.log
+dist/
+build/

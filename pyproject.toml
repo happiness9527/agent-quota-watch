@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-quota-watch"
+version = "0.1.0"
+description = "Local quota snapshot monitoring and automatic resume scheduling for AI coding agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "dbin" }
+]
+keywords = ["codex", "claude", "ai-agent", "quota", "automation", "macos"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development",
+  "Topic :: Utilities"
+]
+
+[project.urls]
+Homepage = "https://github.com/happiness9527/agent-quota-watch"
+Issues = "https://github.com/happiness9527/agent-quota-watch/issues"
+
+[project.scripts]
+quota-watch = "guardian:main"
+
+[tool.setuptools]
+py-modules = ["guardian", "quota_watch"]

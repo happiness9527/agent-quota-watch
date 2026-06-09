@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local continuity guardian for Codex and Claude Code tasks.
+"""Local quota snapshot monitor and resume scheduler for AI agent tasks.
 
 The script intentionally uses only public CLI resume commands and local state.
 It does not read platform auth files or private quota databases.
@@ -29,10 +29,15 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 
 
-APP_NAME = "Agent Guardian"
-DEFAULT_HOME = Path(
-    os.environ.get("AGENT_GUARDIAN_HOME", Path.home() / ".agent-continuity")
-).expanduser()
+APP_NAME = "Agent Quota Watch"
+_DEFAULT_HOME_VALUE = os.environ.get("AGENT_QUOTA_WATCH_HOME") or os.environ.get(
+    "AGENT_GUARDIAN_HOME"
+)
+if not _DEFAULT_HOME_VALUE:
+    new_home = Path.home() / ".agent-quota-watch"
+    legacy_home = Path.home() / ".agent-continuity"
+    _DEFAULT_HOME_VALUE = legacy_home if legacy_home.exists() and not new_home.exists() else new_home
+DEFAULT_HOME = Path(_DEFAULT_HOME_VALUE).expanduser()
 TASKS_FILE = DEFAULT_HOME / "tasks.json"
 LOG_DIR = DEFAULT_HOME / "logs"
 DEFAULT_RETRY_DELAY = timedelta(hours=5, minutes=10)
@@ -225,7 +230,7 @@ def make_task(
 ) -> dict[str, Any]:
     cwd_path = str(Path(cwd).expanduser().resolve())
     task_id = task_id_for(platform, cwd_path)
-    checkpoint_path = str(Path(cwd_path) / ".agent-continuity" / f"{task_id}.md")
+    checkpoint_path = str(Path(cwd_path) / ".agent-quota-watch" / f"{task_id}.md")
     created_at = iso(local_now())
     return {
         "id": task_id,
@@ -269,7 +274,7 @@ def ensure_checkpoint(task: dict[str, Any]) -> None:
     if path.exists():
         return
     content = (
-        f"# Agent Continuity Checkpoint\n\n"
+        f"# Agent Quota Watch Checkpoint\n\n"
         f"- Task ID: `{task['id']}`\n"
         f"- Platform: `{task['platform']}`\n"
         f"- CWD: `{task['cwd']}`\n"
@@ -277,7 +282,7 @@ def ensure_checkpoint(task: dict[str, Any]) -> None:
         "## Original Task\n\n"
         f"{task.get('prompt') or '(manual resume task)'}\n\n"
         "## Current State\n\n"
-        "- Not started by guardian yet.\n\n"
+        "- Not started by Agent Quota Watch yet.\n\n"
         "## Next Action\n\n"
         "- Read this file, inspect the repository state, then continue only the unfinished work.\n"
     )
@@ -286,7 +291,7 @@ def ensure_checkpoint(task: dict[str, Any]) -> None:
 
 def wrapped_start_prompt(task: dict[str, Any]) -> str:
     return (
-        "你正在由 Agent Guardian 托管执行一个可能跨额度窗口的长任务。\n"
+        "你正在由 Agent Quota Watch 托管执行一个可能跨额度窗口的长任务。\n"
         f"Checkpoint 文件: {task['checkpoint_path']}\n\n"
         "执行要求:\n"
         "1. 开始前先检查当前目录和 git status。\n"
@@ -299,7 +304,7 @@ def wrapped_start_prompt(task: dict[str, Any]) -> str:
 
 def wrapped_resume_prompt(task: dict[str, Any]) -> str:
     return (
-        "继续 Agent Guardian 托管的未完成任务。\n"
+        "继续 Agent Quota Watch 托管的未完成任务。\n"
         f"Checkpoint 文件: {task['checkpoint_path']}\n\n"
         "恢复要求:\n"
         "1. 先读取 checkpoint，并检查 git status。\n"
@@ -550,6 +555,7 @@ def is_quota_signal_line(text: str) -> bool:
         "is treated as rate-limited",
         "执行要求",
         "agent guardian 托管",
+        "agent quota watch 托管",
     )
     return not any(context in lowered for context in ignored_contexts)
 
@@ -819,7 +825,7 @@ def run_with_continuity(
         print(f"预计恢复时间: {iso(retry_at)}")
 
         if not foreground_wait:
-            print("请保持 guardian daemon 运行，或之后执行 resume 命令。")
+            print("请保持 Agent Quota Watch daemon 运行，或之后执行 resume 命令。")
             return 0
 
         sleep_until(retry_at)
@@ -1270,7 +1276,7 @@ def discover_codex_sessions(
         status = "rate_limited" if reached_limit else "scheduled"
         prompt = (
             f"{prompt}\n\n"
-            f"[Guardian] Codex 使用量已接近阈值：最高 used_percent={max_used_percent:.1f}%，"
+            f"[Agent Quota Watch] Codex 使用量已接近阈值：最高 used_percent={max_used_percent:.1f}%，"
             f"将在额度窗口重置后自动续跑。"
         )
         discovered.append(
@@ -2018,7 +2024,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
         warnings_html = "<li>暂无警告。</li>"
 
     task_rows = "\n".join(rows) or """
-      <tr><td colspan="6" class="empty">暂无托管任务。保持页面打开，Guardian 会继续扫描。</td></tr>
+      <tr><td colspan="6" class="empty">暂无托管任务。保持页面打开，Agent Quota Watch 会继续扫描。</td></tr>
     """
 
     plan_items = []
@@ -2040,7 +2046,7 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="refresh" content="20">
-  <title>Agent Continuity Guardian</title>
+  <title>Agent Quota Watch</title>
   <style>
     :root {{
       color-scheme: light dark;
@@ -2147,8 +2153,8 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
 </head>
 <body>
   <header>
-    <h1>Agent Continuity Guardian</h1>
-    <p>本地守护页面：自动扫描 Codex 与 Claude 的额度中断任务，到恢复时间后自动继续。</p>
+    <h1>Agent Quota Watch</h1>
+    <p>本地额度快照监控与自动续跑面板：跟踪 Codex / Claude 任务，额度恢复后继续未完成工作。</p>
   </header>
   <main>
     <section class="grid">
@@ -2213,8 +2219,8 @@ def render_dashboard_html(args: argparse.Namespace, worker_state: dict[str, Any]
 
     <section class="card" style="margin-top:18px">
       <div class="label">推荐启动方式</div>
-      <p><code>python3 guardian.py dashboard --scan-ui --open --keep-awake</code></p>
-      <p class="muted">如果只监控 Codex / Claude Code 本地会话，也可以使用 <code>python3 guardian.py dashboard --open</code>。监控 Claude 桌面 App 前，先给 Terminal/Python 开辅助功能权限。</p>
+      <p><code>python3 quota_watch.py dashboard --scan-ui --open --keep-awake</code></p>
+      <p class="muted">如果只监控 Codex / Claude Code 本地会话，也可以使用 <code>python3 quota_watch.py dashboard --open</code>。监控 Claude 桌面 App 前，先给 Terminal/Python 开辅助功能权限。</p>
     </section>
   </main>
 </body>
@@ -2361,15 +2367,15 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
         server = ThreadingHTTPServer((args.host, args.port), Handler)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
-            print("Agent Guardian 可视化页面已经在运行。")
+            print("Agent Quota Watch 可视化页面已经在运行。")
             print(f"已有页面地址: {url}")
             print("不用重复启动，直接打开上面的地址即可。")
-            print(f"如果你想另开一个页面，可以换端口: python3 guardian.py dashboard --port {args.port + 1} --open")
+            print(f"如果你想另开一个页面，可以换端口: python3 quota_watch.py dashboard --port {args.port + 1} --open")
             if args.open:
                 webbrowser.open(url)
             return 0
         raise
-    print(f"Agent Guardian 可视化页面已启动: {url}", flush=True)
+    print(f"Agent Quota Watch 可视化页面已启动: {url}", flush=True)
     print("保持这个终端窗口打开，页面和后台扫描才会继续运行。按 Ctrl+C 停止。", flush=True)
     if args.keep_awake:
         if sys.platform == "darwin" and shutil.which("caffeinate"):
@@ -2403,8 +2409,8 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="guardian",
-        description="Keep Codex and Claude Code tasks resumable across quota windows.",
+        prog="quota-watch",
+        description="Monitor local AI-agent quota snapshots and resume interrupted tasks.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -2500,7 +2506,7 @@ def build_parser() -> argparse.ArgumentParser:
     daemon.set_defaults(discover=True)
     daemon.set_defaults(func=cmd_daemon)
 
-    dashboard = sub.add_parser("dashboard", help="start a local Chinese web dashboard")
+    dashboard = sub.add_parser("dashboard", help="start the local web dashboard")
     dashboard.add_argument("--host", default="127.0.0.1")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--interval", type=int, default=30)
